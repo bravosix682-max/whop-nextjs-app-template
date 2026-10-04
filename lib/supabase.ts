@@ -54,6 +54,17 @@ export async function createAnnouncement(row: {
 	});
 }
 
+export async function updateAnnouncement(
+	experienceId: string,
+	id: string,
+	fields: { title: string; body: string; pinned: boolean },
+) {
+	await request(
+		`announcements?id=eq.${encodeURIComponent(id)}&experience_id=eq.${encodeURIComponent(experienceId)}`,
+		{ method: "PATCH", body: JSON.stringify(fields) },
+	);
+}
+
 export async function setPinned(
 	experienceId: string,
 	id: string,
@@ -70,4 +81,27 @@ export async function deleteAnnouncement(experienceId: string, id: string) {
 		`announcements?id=eq.${encodeURIComponent(id)}&experience_id=eq.${encodeURIComponent(experienceId)}`,
 		{ method: "DELETE" },
 	);
+}
+
+export async function recordViews(userId: string, ids: string[]) {
+	if (ids.length === 0) return;
+	await request("announcement_views?on_conflict=announcement_id,user_id", {
+		method: "POST",
+		headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+		body: JSON.stringify(
+			ids.map((announcement_id) => ({ announcement_id, user_id: userId })),
+		),
+	});
+}
+
+export async function viewCounts(
+	experienceId: string,
+): Promise<Record<string, number>> {
+	const rows = (await request("rpc/announcement_view_counts", {
+		method: "POST",
+		body: JSON.stringify({ exp: experienceId }),
+	})) as { announcement_id: string; views: number }[] | null;
+	const out: Record<string, number> = {};
+	for (const r of rows ?? []) out[r.announcement_id] = Number(r.views);
+	return out;
 }
