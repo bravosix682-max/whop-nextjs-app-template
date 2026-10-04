@@ -8,6 +8,7 @@ import {
 	listAnnouncements,
 	setPinned,
 } from "@/lib/supabase";
+import { SubmitButton } from "./submit-button";
 
 export default async function ExperiencePage({
 	params,
@@ -15,20 +16,19 @@ export default async function ExperiencePage({
 	params: Promise<{ experienceId: string }>;
 }) {
 	const { experienceId } = await params;
+
+	// Start loading the posts right away, while the login check runs.
+	const itemsPromise = listAnnouncements(experienceId)
+		.then((rows) => ({ rows, failed: false }))
+		.catch(() => ({ rows: [] as Announcement[], failed: true }));
+
 	// Ensure the user is logged in on whop.
 	const { userId } = await whopsdk.verifyUserToken(await headers());
 	const access = await whopsdk.users.checkAccess(experienceId, { id: userId });
+	const isAdmin = String((access as any).access_level) === "admin";
 
-	const accessLevel = String((access as any).access_level);
-	const isAdmin = accessLevel === "admin";
-
-	let items: Announcement[] = [];
-	let loadError = false;
-	try {
-		items = await listAnnouncements(experienceId);
-	} catch {
-		loadError = true;
-	}
+	const { rows: items, failed: loadError } = await itemsPromise;
+	const newId = crypto.randomUUID();
 
 	async function publish(formData: FormData) {
 		"use server";
@@ -40,7 +40,10 @@ export default async function ExperiencePage({
 			.trim()
 			.slice(0, 4000);
 		if (!title || !body) return;
+		const rawId = String(formData.get("id") ?? "");
+		const id = /^[0-9a-f-]{36}$/i.test(rawId) ? rawId : crypto.randomUUID();
 		await createAnnouncement({
+			id,
 			experience_id: experienceId,
 			title,
 			body,
@@ -63,6 +66,7 @@ export default async function ExperiencePage({
 					className="flex flex-col gap-3 rounded-lg border border-gray-a4 bg-gray-a2 p-4"
 				>
 					<h2 className="text-6 font-bold">New announcement</h2>
+					<input type="hidden" name="id" value={newId} />
 					<input
 						name="title"
 						required
@@ -81,13 +85,12 @@ export default async function ExperiencePage({
 					<label className="flex items-center gap-2 text-3">
 						<input type="checkbox" name="pinned" /> Pin to top
 					</label>
-					<button
-						type="submit"
+					<SubmitButton
+						label="Publish"
+						pendingLabel="Posting..."
 						className="rounded-lg px-4 py-2 text-3 font-medium"
 						style={{ background: "#2563eb", color: "#fff" }}
-					>
-						Publish
-					</button>
+					/>
 				</form>
 			)}
 
@@ -135,22 +138,24 @@ export default async function ExperiencePage({
 						{isAdmin && (
 							<div className="flex gap-3">
 								<form action={togglePin}>
-									<button type="submit" className="text-2 underline">
-										{a.pinned ? "Unpin" : "Pin"}
-									</button>
+									<SubmitButton
+										label={a.pinned ? "Unpin" : "Pin"}
+										pendingLabel="Working..."
+										className="text-2 underline"
+									/>
 								</form>
 								<form action={remove}>
-									<button type="submit" className="text-2 underline">
-										Delete
-									</button>
+									<SubmitButton
+										label="Delete"
+										pendingLabel="Deleting..."
+										className="text-2 underline"
+									/>
 								</form>
 							</div>
 						)}
 					</article>
 				);
 			})}
-
-			<p className="text-2 text-gray-10">Role: {accessLevel}</p>
 		</div>
 	);
 }

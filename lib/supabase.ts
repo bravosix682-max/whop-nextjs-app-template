@@ -39,15 +39,17 @@ export async function listAnnouncements(
 }
 
 export async function createAnnouncement(row: {
+	id: string;
 	experience_id: string;
 	title: string;
 	body: string;
 	pinned: boolean;
 	author_id: string | null;
 }) {
-	await request("announcements", {
+	// If the same id arrives twice (double click), the second one is ignored.
+	await request("announcements?on_conflict=id", {
 		method: "POST",
-		headers: { Prefer: "return=minimal" },
+		headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
 		body: JSON.stringify(row),
 	});
 }
