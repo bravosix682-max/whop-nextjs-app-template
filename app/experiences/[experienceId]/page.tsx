@@ -1,27 +1,88 @@
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { notifyExperience } from "@/lib/notify";
 import {
+	asPlan,
+	EMOJIS,
+	FEATURES,
+	PLAN_NAMES,
+	PLAN_PRICES,
+	type Plan,
+} from "@/lib/plans";
+import {
+	acknowledge,
 	type Announcement,
+	castVote,
 	createAnnouncement,
 	deleteAnnouncement,
+	getAnnouncement,
+	getPlan,
+	getStats,
 	listAnnouncements,
 	recordViews,
+	type Stats,
 	setPinned,
+	setPlan,
+	toggleReaction,
 	updateAnnouncement,
-	viewCounts,
 } from "@/lib/supabase";
 import { whopsdk } from "@/lib/whop-sdk";
-import { Composer } from "./composer";
-import { SubmitButton } from "./submit-button";
+import "./announcements.css";
+import { CreateForm, type FormResult } from "./create-form";
+import { Icon, type IconName } from "./icons";
+import {
+	AckButton,
+	AdminActions,
+	Countdown,
+	ExportButton,
+	PlanButton,
+	PollBlock,
+	ReactionBar,
+} from "./interactive";
+import { Shell, ThemeToggle } from "./shell";
 import { ViewTracker } from "./view-tracker";
 
 const UUID = /^[0-9a-f-]{36}$/i;
 const URL_PATTERN = /(https?:\/\/[^\s<]+)/g;
 const IMAGE_URL = /\.(png|jpe?g|gif|webp)(\?[^\s]*)?$/i;
+
+const PLAN_CARDS: { plan: Plan; blurb: string; items: string[] }[] = [
+	{
+		plan: "starter",
+		blurb: "For new communities getting started",
+		items: [
+			"5 live announcements",
+			"Rich formatting and emoji reactions",
+			"Pin 1 announcement",
+			"Priority labels",
+			"Basic view count",
+		],
+	},
+	{
+		plan: "pro",
+		blurb: "For creators who need members to actually read",
+		items: [
+			"Unlimited announcements",
+			"Schedule posts for later",
+			"Polls inside announcements",
+			"Must-acknowledge posts with read receipts",
+			"Event countdowns and auto-expiry",
+			"Full engagement analytics",
+		],
+	},
+	{
+		plan: "business",
+		blurb: "For brands running serious communities",
+		items: [
+			"Everything in Pro",
+			"Push notifications to all members at once",
+			"A/B test two headlines",
+			"Export analytics to CSV",
+		],
+	},
+];
 
 function renderText(text: string, keyBase: string): ReactNode[] {
 	return text
@@ -44,8 +105,12 @@ function renderBody(text: string): ReactNode[] {
 							src={url}
 							alt=""
 							loading="lazy"
-							className="my-2 max-w-full rounded-lg"
-							style={{ display: "block" }}
+							style={{
+								display: "block",
+								maxWidth: "100%",
+								borderRadius: 14,
+								margin: "8px 0",
+							}}
 						/>
 					</a>
 					{tail}
@@ -58,7 +123,7 @@ function renderBody(text: string): ReactNode[] {
 					href={url}
 					target="_blank"
 					rel="noopener noreferrer"
-					className="underline"
+					style={{ textDecoration: "underline" }}
 				>
 					{url}
 				</a>
@@ -74,12 +139,40 @@ function clean(value: FormDataEntryValue | null, max: number) {
 		.slice(0, max);
 }
 
-function noticeText(n?: string) {
-	if (n === "sent") return "Posted. Members were notified.";
-	if (n === "saved") return "Saved.";
-	if (n === "notfailed")
-		return "Posted, but the push notification could not be sent. Check that the notification permission is turned on for this app in the Whop developer dashboard.";
-	return null;
+function isoOrNull(value: FormDataEntryValue | null) {
+	const s = String(value ?? "").trim();
+	if (!s) return null;
+	const d = new Date(s);
+	return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function isLiveAt(a: Announcement, t: number) {
+	return (
+		new Date(a.publish_at).getTime() <= t &&
+		(!a.expires_at || new Date(a.expires_at).getTime() > t)
+	);
+}
+
+function when(iso: string) {
+	const diff = new Date(iso).getTime() - Date.now();
+	const m = Math.floor(Math.abs(diff) / 60000);
+	if (m < 1) return "just now";
+	const label =
+		m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
+	return diff > 0 ? `in ${label}` : `${label} ago`;
+}
+
+function variantFor(userId: string, id: string) {
+	let h = 0;
+	const s = userId + id;
+	for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+	return h % 2 === 0 ? "a" : "b";
+}
+
+function csvCell(v: string | number) {
+	const s = String(v);
+	const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;
+	return `"${safe.replace(/"/g, '""')}"`;
 }
 
 export default async function ExperiencePage({
@@ -87,210 +180,595 @@ export default async function ExperiencePage({
 	searchParams,
 }: {
 	params: Promise<{ experienceId: string }>;
-	searchParams: Promise<{ edit?: string; notice?: string }>;
+	searchParams: Promise<{ view?: string; edit?: string }>;
 }) {
 	const { experienceId } = await params;
-	const { edit, notice } = await searchParams;
+	const { view: viewParam, edit } = await searchParams;
 	const basePath = `/experiences/${experienceId}`;
 
-	const started = Date.now();
-	const timing = { login: 0, access: 0, posts: 0 };
-
-	// Start loading the posts right away, while the login check runs.
-	const itemsPromise = listAnnouncements(experienceId)
+	const listP = listAnnouncements(experienceId)
 		.then((rows) => ({ rows, failed: false }))
-		.catch(() => ({ rows: [] as Announcement[], failed: true }))
-		.then((result) => {
-			timing.posts = Date.now() - started;
-			return result;
-		});
+		.catch(() => ({ rows: [] as Announcement[], failed: true }));
+	const planP = getPlan(experienceId).catch(() => "starter" as Plan);
 
 	// Ensure the user is logged in on whop.
 	const { userId } = await whopsdk.verifyUserToken(await headers());
-	timing.login = Date.now() - started;
 	const access = await whopsdk.users.checkAccess(experienceId, { id: userId });
-	timing.access = Date.now() - started;
 	const isAdmin = String((access as any).access_level) === "admin";
 
-	const emptyCounts: Record<string, number> = {};
-	const [{ rows: items, failed: loadError }, counts] = await Promise.all([
-		itemsPromise,
-		isAdmin
-			? viewCounts(experienceId).catch(() => emptyCounts)
-			: Promise.resolve(emptyCounts),
+	const statsP = getStats(experienceId, userId).catch(
+		() => ({}) as Record<string, Stats>,
+	);
+	const [{ rows: all, failed: loadError }, plan, stats] = await Promise.all([
+		listP,
+		planP,
+		statsP,
 	]);
-	const total = Date.now() - started;
 
-	const ids = items.map((a) => a.id);
-	const newId = crypto.randomUUID();
-	const editing =
-		isAdmin && edit ? items.find((a) => a.id === edit) : undefined;
+	const f = FEATURES[plan];
+	const creator = isAdmin;
+	const view = creator
+		? ["create", "analytics", "plans"].includes(viewParam ?? "")
+			? (viewParam as string)
+			: "feed"
+		: "feed";
+
+	// Owner-only free plan switching, until real billing is added.
+	// If OWNER_USER_IDS is not set yet, any admin can switch (test mode).
+	const owners = (process.env.OWNER_USER_IDS ?? "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+	const canSwitchFree =
+		isAdmin && (owners.length === 0 || owners.includes(userId));
+
+	const now = Date.now();
+	const visible = creator ? all : all.filter((a) => isLiveAt(a, now));
+	const liveCount = all.filter((a) => isLiveAt(a, now)).length;
+	const editing = creator && edit ? all.find((a) => a.id === edit) : undefined;
+
+	const trackRows = !isAdmin
+		? visible.map((a) => ({
+				id: a.id,
+				variant: a.alt_title ? variantFor(userId, a.id) : "a",
+			}))
+		: [];
+
+	// ---------- server actions ----------
 
 	async function markSeen() {
 		"use server";
-		if (isAdmin) return;
-		await recordViews(userId, ids);
+		await recordViews(userId, trackRows);
 	}
 
-	async function publish(formData: FormData) {
+	async function react(id: string, emoji: string) {
 		"use server";
-		if (!isAdmin) return;
+		if (!UUID.test(id) || !EMOJIS.includes(emoji)) return;
+		await toggleReaction(id, userId, emoji);
+	}
+
+	async function ack(id: string) {
+		"use server";
+		if (!UUID.test(id)) return;
+		await acknowledge(id, userId);
+	}
+
+	async function vote(id: string, index: number) {
+		"use server";
+		if (!UUID.test(id) || !Number.isInteger(index)) return;
+		const a = await getAnnouncement(experienceId, id);
+		if (!a?.poll || index < 0 || index >= a.poll.options.length) return;
+		await castVote(id, userId, index);
+	}
+
+	async function pin(id: string, pinned: boolean): Promise<string> {
+		"use server";
+		if (!isAdmin || !UUID.test(id)) return "Not allowed.";
+		if (pinned) {
+			const list = await listAnnouncements(experienceId);
+			const others = list.filter((a) => a.pinned && a.id !== id).length;
+			if (others >= f.pinMax) {
+				return `Your plan allows ${f.pinMax} pinned announcement${f.pinMax === 1 ? "" : "s"}.`;
+			}
+		}
+		await setPinned(experienceId, id, pinned);
+		revalidatePath(basePath);
+		return "";
+	}
+
+	async function remove(id: string): Promise<string> {
+		"use server";
+		if (!isAdmin || !UUID.test(id)) return "Not allowed.";
+		await deleteAnnouncement(experienceId, id);
+		revalidatePath(basePath);
+		return "";
+	}
+
+	async function publish(
+		_prev: FormResult,
+		formData: FormData,
+	): Promise<FormResult> {
+		"use server";
+		if (!isAdmin) return { ok: false, message: "Only admins can post." };
 		const title = clean(formData.get("title"), 120);
 		const body = clean(formData.get("body"), 4000);
-		if (!title || !body) return;
+		if (!title || !body) {
+			return { ok: false, message: "Add a headline and a message." };
+		}
 		const rawId = String(formData.get("id") ?? "");
 		const id = UUID.test(rawId) ? rawId : crypto.randomUUID();
+		const p = String(formData.get("priority") ?? "");
+		const priority = p === "important" || p === "urgent" ? p : "normal";
+		const wantPin = formData.get("pinned") === "on";
+
+		const existing = await listAnnouncements(experienceId);
+		const t = Date.now();
+		if (existing.filter((a) => isLiveAt(a, t)).length >= f.liveMax) {
+			return {
+				ok: false,
+				message: `Your plan allows ${f.liveMax} live announcements. Delete one or upgrade.`,
+			};
+		}
+		if (wantPin && existing.filter((a) => a.pinned).length >= f.pinMax) {
+			return {
+				ok: false,
+				message: `Your plan allows ${f.pinMax} pinned announcement${f.pinMax === 1 ? "" : "s"}. Unpin one or upgrade.`,
+			};
+		}
+
+		const publishAt = f.schedule ? isoOrNull(formData.get("publish_at")) : null;
+		const eventAt = f.countdown ? isoOrNull(formData.get("event_at")) : null;
+		const expiresAt = f.expire ? isoOrNull(formData.get("expires_at")) : null;
+		const requireAck = f.acknowledge && formData.get("require_ack") === "on";
+		const altTitle = f.abTest
+			? clean(formData.get("alt_title"), 120) || null
+			: null;
+
+		let poll: { question: string; options: string[] } | null = null;
+		if (f.poll) {
+			const question = clean(formData.get("poll_q"), 140);
+			const options = [1, 2, 3, 4]
+				.map((n) => clean(formData.get(`poll_o${n}`), 80))
+				.filter(Boolean);
+			if (question && options.length >= 2) poll = { question, options };
+		}
+
+		const scheduledLater =
+			!!publishAt && new Date(publishAt).getTime() > Date.now();
+
 		await createAnnouncement({
 			id,
 			experience_id: experienceId,
 			title,
 			body,
-			pinned: formData.get("pinned") === "on",
+			pinned: wantPin,
 			author_id: userId,
+			priority,
+			require_ack: requireAck,
+			publish_at: publishAt ?? undefined,
+			event_at: eventAt,
+			expires_at: expiresAt,
+			alt_title: altTitle,
+			poll,
 		});
-		let outcome = "saved";
-		if (formData.get("notify") === "on") {
-			const ok = await notifyExperience({
-				experienceId,
-				title,
-				content: body.replace(/\s+/g, " ").slice(0, 140),
-			});
-			outcome = ok ? "sent" : "notfailed";
-		}
 		revalidatePath(basePath);
-		redirect(`${basePath}?notice=${outcome}`);
+
+		let message = scheduledLater ? "Scheduled." : "Posted.";
+		if (f.pushSend && formData.get("push") === "on") {
+			if (scheduledLater) {
+				message += " Push is not sent for scheduled posts yet.";
+			} else {
+				const r = await notifyExperience({
+					experienceId,
+					title,
+					content: body.replace(/\s+/g, " ").slice(0, 140),
+				});
+				message += r.ok
+					? " Members were notified."
+					: ` The push notification failed. ${r.detail}`;
+			}
+		}
+		return { ok: true, message };
 	}
 
-	async function update(formData: FormData) {
+	async function update(
+		_prev: FormResult,
+		formData: FormData,
+	): Promise<FormResult> {
 		"use server";
-		if (!isAdmin) return;
+		if (!isAdmin) return { ok: false, message: "Only admins can edit." };
 		const id = String(formData.get("id") ?? "");
-		if (!UUID.test(id)) return;
+		if (!UUID.test(id)) return { ok: false, message: "Something went wrong." };
 		const title = clean(formData.get("title"), 120);
 		const body = clean(formData.get("body"), 4000);
-		if (!title || !body) return;
+		if (!title || !body) {
+			return { ok: false, message: "Add a headline and a message." };
+		}
+		const p = String(formData.get("priority") ?? "");
+		const priority = p === "important" || p === "urgent" ? p : "normal";
+		const wantPin = formData.get("pinned") === "on";
+		if (wantPin) {
+			const list = await listAnnouncements(experienceId);
+			const others = list.filter((a) => a.pinned && a.id !== id).length;
+			if (others >= f.pinMax) {
+				return {
+					ok: false,
+					message: `Your plan allows ${f.pinMax} pinned announcement${f.pinMax === 1 ? "" : "s"}.`,
+				};
+			}
+		}
 		await updateAnnouncement(experienceId, id, {
 			title,
 			body,
-			pinned: formData.get("pinned") === "on",
+			pinned: wantPin,
+			priority,
 		});
 		revalidatePath(basePath);
-		redirect(`${basePath}?notice=saved`);
+		return { ok: true, message: "Saved." };
 	}
 
-	const message = noticeText(notice);
+	// Only the owner can switch plans for free (replaced by real billing later).
+	async function choosePlan(next: string) {
+		"use server";
+		if (!canSwitchFree) return;
+		await setPlan(experienceId, asPlan(next));
+		revalidatePath(basePath);
+	}
 
-	return (
-		<div className="flex flex-col gap-6 p-8">
-			<h1 className="text-9 font-bold">Announcements</h1>
+	// ---------- pieces of the page ----------
 
-			{message && (
-				<p className="rounded-lg border border-gray-a4 bg-gray-a2 p-3 text-3">
-					{message}
-				</p>
-			)}
+	const nav = (v: string, label: string, icon: IconName, href: string) => (
+		<Link
+			key={v}
+			href={href}
+			prefetch={false}
+			className={view === v ? "on" : ""}
+		>
+			<Icon name={icon} size={18} />
+			{label}
+		</Link>
+	);
 
-			{isAdmin && editing && (
-				<Composer
-					key={editing.id}
-					mode="edit"
-					action={update}
-					id={editing.id}
-					cancelHref={basePath}
-					initial={{
-						title: editing.title,
-						body: editing.body,
-						pinned: editing.pinned,
-					}}
-				/>
-			)}
-			{isAdmin && !editing && (
-				<Composer key={newId} mode="create" action={publish} id={newId} />
-			)}
+	const renderPost = (a: Announcement) => {
+		const s = stats[a.id];
+		const scheduled = new Date(a.publish_at).getTime() > now;
+		const expired = !!a.expires_at && new Date(a.expires_at).getTime() <= now;
+		const shownTitle =
+			!isAdmin && a.alt_title && variantFor(userId, a.id) === "b"
+				? a.alt_title
+				: a.title;
+		return (
+			<article key={a.id} className="an-card">
+				<div className="an-card-top">
+					<div className="an-tags">
+						{a.pinned && (
+							<span className="an-tag pin">
+								<Icon name="pin" size={13} /> Pinned
+							</span>
+						)}
+						{a.priority !== "normal" && (
+							<span className={`an-tag ${a.priority}`}>{a.priority}</span>
+						)}
+						{scheduled && <span className="an-tag">Scheduled</span>}
+						{expired && <span className="an-tag">Expired</span>}
+						<span className="an-muted">{when(a.publish_at)}</span>
+					</div>
+					{creator && (
+						<AdminActions
+							id={a.id}
+							pinned={a.pinned}
+							editHref={`${basePath}?view=create&edit=${a.id}`}
+							onPin={pin}
+							onDelete={remove}
+						/>
+					)}
+				</div>
+				<h2 className="an-title">{shownTitle}</h2>
+				<p className="an-body">{renderBody(a.body)}</p>
+				{a.event_at && <Countdown target={a.event_at} />}
+				{a.poll && (
+					<PollBlock
+						id={a.id}
+						poll={a.poll}
+						counts={s?.vote_counts ?? {}}
+						myVote={s?.my_vote ?? null}
+						showResults={creator}
+						onVote={vote}
+					/>
+				)}
+				{a.require_ack &&
+					(creator ? (
+						<span className="an-muted">Members must confirm they read this</span>
+					) : (
+						<AckButton id={a.id} done={s?.my_ack ?? false} onAck={ack} />
+					))}
+				<div className="an-card-foot">
+					<ReactionBar
+						id={a.id}
+						counts={s?.reaction_counts ?? {}}
+						mine={s?.my_reactions ?? []}
+						onReact={react}
+					/>
+					<div className="an-meta">
+						<span>
+							<Icon name="eye" size={14} />
+							{(s?.view_count ?? 0).toLocaleString("en-US")}
+						</span>
+						{a.require_ack && <span>{s?.ack_count ?? 0} confirmed</span>}
+					</div>
+				</div>
+			</article>
+		);
+	};
 
-			{!isAdmin && ids.length > 0 && (
-				<ViewTracker key={ids.join(",")} action={markSeen} />
-			)}
-
+	const feed = (
+		<>
 			{loadError && (
-				<p className="text-3 text-gray-10">
-					Couldn't load announcements. Please try again.
-				</p>
+				<p className="an-muted">Couldn't load announcements. Please try again.</p>
 			)}
-			{!loadError && items.length === 0 && (
-				<p className="text-3 text-gray-10">No announcements yet.</p>
+			{!loadError && visible.length === 0 && (
+				<p className="an-muted">No announcements yet.</p>
 			)}
+			{visible.map(renderPost)}
+		</>
+	);
 
-			{items.map((a) => {
-				async function togglePin() {
-					"use server";
-					if (!isAdmin) return;
-					await setPinned(experienceId, a.id, !a.pinned);
-					revalidatePath(basePath);
-				}
-				async function remove() {
-					"use server";
-					if (!isAdmin) return;
-					await deleteAnnouncement(experienceId, a.id);
-					revalidatePath(basePath);
-				}
-				return (
-					<article
-						key={a.id}
-						className="flex flex-col gap-2 rounded-lg border border-gray-a4 bg-gray-a2 p-4"
-					>
-						<div className="flex items-center justify-between gap-4">
-							<h2 className="text-6 font-bold">
-								{a.pinned ? "📌 " : ""}
-								{a.title}
-							</h2>
-							<span className="text-2 text-gray-10">
-								{new Date(a.created_at).toLocaleDateString("en-GB", {
-									day: "numeric",
-									month: "short",
-									year: "numeric",
-								})}
+	let content: ReactNode;
+
+	if (creator && view === "create") {
+		content = (
+			<>
+				<div className="an-head">
+					<h1>{editing ? "Edit announcement" : "Create announcement"}</h1>
+					<p className="an-muted">Templates and delivery options</p>
+				</div>
+				<CreateForm
+					key={editing ? editing.id : "new"}
+					action={editing ? update : publish}
+					plan={plan}
+					mode={editing ? "edit" : "create"}
+					id={editing ? editing.id : ""}
+					liveCount={liveCount}
+					initial={
+						editing
+							? {
+									title: editing.title,
+									body: editing.body,
+									pinned: editing.pinned,
+									priority: editing.priority,
+								}
+							: undefined
+					}
+					cancelHref={basePath}
+				/>
+			</>
+		);
+	} else if (creator && view === "analytics") {
+		const rows = all.map((a) => ({ a, s: stats[a.id] }));
+		const totalViews = rows.reduce((n, r) => n + (r.s?.view_count ?? 0), 0);
+		const totalReactions = rows.reduce(
+			(n, r) =>
+				n +
+				Object.values(r.s?.reaction_counts ?? {}).reduce((x, y) => x + y, 0),
+			0,
+		);
+		const ackRows = rows.filter((r) => r.a.require_ack);
+		const ackViews = ackRows.reduce((n, r) => n + (r.s?.view_count ?? 0), 0);
+		const ackDone = ackRows.reduce((n, r) => n + (r.s?.ack_count ?? 0), 0);
+		const rate = ackViews > 0 ? `${Math.round((ackDone / ackViews) * 100)}%` : "-";
+		const maxViews = Math.max(1, ...rows.map((r) => r.s?.view_count ?? 0));
+		const csv = [
+			["title", "published", "views", "reactions", "confirmed", "views_a", "views_b"]
+				.map(csvCell)
+				.join(","),
+			...rows.map((r) =>
+				[
+					r.a.title,
+					r.a.publish_at,
+					r.s?.view_count ?? 0,
+					Object.values(r.s?.reaction_counts ?? {}).reduce((x, y) => x + y, 0),
+					r.s?.ack_count ?? 0,
+					r.s?.views_a ?? 0,
+					r.s?.views_b ?? 0,
+				]
+					.map(csvCell)
+					.join(","),
+			),
+		].join("\n");
+
+		const list = (
+			<div className="an-card">
+				<h2 className="an-title">Views per announcement</h2>
+				{rows.length === 0 && <p className="an-muted">Nothing to show yet.</p>}
+				{rows.map((r) => (
+					<div key={r.a.id} className="an-bar-row">
+						<div className="an-bar-top">
+							<span>{r.a.title}</span>
+							<span className="an-muted">
+								{r.s?.view_count ?? 0}
+								{r.a.alt_title
+									? ` (A ${r.s?.views_a ?? 0} · B ${r.s?.views_b ?? 0})`
+									: ""}
 							</span>
 						</div>
-						<p className="whitespace-pre-wrap text-3">{renderBody(a.body)}</p>
-						{isAdmin && (
-							<div className="flex items-center gap-3">
-								<Link
-									href={`${basePath}?edit=${a.id}`}
-									prefetch={false}
-									className="text-2 underline"
-								>
-									Edit
-								</Link>
-								<form action={togglePin}>
-									<SubmitButton
-										label={a.pinned ? "Unpin" : "Pin"}
-										pendingLabel="Working..."
-										className="text-2 underline"
-									/>
-								</form>
-								<form action={remove}>
-									<SubmitButton
-										label="Delete"
-										pendingLabel="Deleting..."
-										className="text-2 underline"
-									/>
-								</form>
-								<span className="text-2 text-gray-10">
-									👁 {counts[a.id] ?? 0} seen
-								</span>
-							</div>
-						)}
-					</article>
-				);
-			})}
+						<div className="an-bar">
+							<i style={{ width: `${((r.s?.view_count ?? 0) / maxViews) * 100}%` }} />
+						</div>
+					</div>
+				))}
+			</div>
+		);
 
-			{isAdmin && (
-				<p className="text-2 text-gray-10">
-					Load time in ms (running total): login {timing.login}, access check{" "}
-					{timing.access}, posts {timing.posts}, page ready {total}
-				</p>
+		content = (
+			<>
+				<div className="an-row">
+					<div className="an-head">
+						<h1>Analytics</h1>
+						<p className="an-muted">See what your members actually read</p>
+					</div>
+					{f.csvExport ? (
+						<ExportButton csv={csv} filename="announcements.csv" />
+					) : (
+						<span className="an-badge">
+							<Icon name="lock" size={11} /> Export CSV · Business
+						</span>
+					)}
+				</div>
+				<div className="an-stats">
+					<div className="an-card an-stat">
+						<span className="ico">
+							<Icon name="eye" size={18} />
+						</span>
+						<b>{totalViews.toLocaleString("en-US")}</b>
+						<span className="an-muted">Total views</span>
+					</div>
+					<div className="an-card an-stat">
+						<span className="ico">
+							<Icon name="users" size={18} />
+						</span>
+						<b>{totalReactions.toLocaleString("en-US")}</b>
+						<span className="an-muted">Reactions</span>
+					</div>
+					<div className="an-card an-stat">
+						<span className="ico">
+							<Icon name="chart" size={18} />
+						</span>
+						<b>{rate}</b>
+						<span className="an-muted">Read-confirm rate</span>
+					</div>
+				</div>
+				{f.fullAnalytics ? (
+					list
+				) : (
+					<div className="an-lockwrap">
+						<div className="blur">{list}</div>
+						<div className="an-lockover">
+							<Icon name="lock" size={22} />
+							<span>Detailed analytics are on Pro</span>
+							<Link
+								href={`${basePath}?view=plans`}
+								prefetch={false}
+								className="an-btn"
+							>
+								See plans
+							</Link>
+						</div>
+					</div>
+				)}
+			</>
+		);
+	} else if (creator && view === "plans") {
+		content = (
+			<>
+				<div className="an-head">
+					<h1>Plans</h1>
+					<p className="an-muted">Start free. Upgrade when your community grows.</p>
+				</div>
+				<div className="an-plans">
+					{PLAN_CARDS.map((c) => (
+						<div
+							key={c.plan}
+							className={`an-card an-plan${c.plan === "pro" ? " pop" : ""}`}
+						>
+							{c.plan === "pro" && <span className="an-pop-badge">Most popular</span>}
+							<h2 className="an-title">{PLAN_NAMES[c.plan]}</h2>
+							<p className="an-muted">{c.blurb}</p>
+							<div className="an-price">
+								${PLAN_PRICES[c.plan]} <small>/month</small>
+							</div>
+							<ul>
+								{c.items.map((text) => (
+									<li key={text}>{text}</li>
+								))}
+							</ul>
+							<PlanButton
+								plan={c.plan}
+								current={plan === c.plan}
+								label={
+									c.plan === "starter"
+										? "Switch to Starter"
+										: `Upgrade to ${PLAN_NAMES[c.plan]}`
+								}
+								primary={c.plan === "pro"}
+								locked={canSwitchFree ? undefined : "Billing coming soon"}
+								onChoose={choosePlan}
+							/>
+						</div>
+					))}
+				</div>
+				{canSwitchFree ? (
+					<p className="an-muted">
+						Owner controls: plan changes apply instantly on this community.
+						Customers will pay through Whop checkout once billing is added.
+						Your Whop user ID: {userId}
+					</p>
+				) : (
+					<p className="an-muted">Paid plans are coming soon.</p>
+				)}
+			</>
+		);
+	} else {
+		content = (
+			<>
+				<div className="an-head">
+					<h1>Announcements</h1>
+					<p className="an-muted">
+						{creator
+							? "What your members see, plus scheduled posts"
+							: "Latest from the team"}
+					</p>
+				</div>
+				{feed}
+			</>
+		);
+	}
+
+	return (
+		<Shell>
+			{!isAdmin && trackRows.length > 0 && (
+				<ViewTracker
+					key={trackRows.map((r) => r.id).join(",")}
+					action={markSeen}
+				/>
 			)}
-		</div>
+			<div className="an-shell">
+				<aside className="an-side">
+					<div className="an-brand">
+						<span className="an-logo">
+							<Icon name="megaphone" size={20} />
+						</span>
+						<div>
+							<div className="an-brand-name">Announcements</div>
+							{creator && <div className="an-muted">{PLAN_NAMES[plan]} plan</div>}
+						</div>
+					</div>
+					<nav className="an-nav">
+						{nav("feed", "Announcements", "megaphone", basePath)}
+						{creator &&
+							nav("create", "Create", "edit", `${basePath}?view=create`)}
+						{creator &&
+							nav("analytics", "Analytics", "chart", `${basePath}?view=analytics`)}
+						{creator && nav("plans", "Plans", "crown", `${basePath}?view=plans`)}
+					</nav>
+					{creator && plan !== "business" && (
+						<Link
+							href={`${basePath}?view=plans`}
+							prefetch={false}
+							className="an-upgrade"
+						>
+							Upgrade to {plan === "starter" ? "Pro" : "Business"}
+							<small>
+								{plan === "starter"
+									? "Scheduling, polls, read receipts"
+									: "A/B tests, push, CSV export"}
+							</small>
+						</Link>
+					)}
+					<div className="an-spacer" />
+					<ThemeToggle />
+				</aside>
+				<main className="an-main">{content}</main>
+			</div>
+		</Shell>
 	);
 }
