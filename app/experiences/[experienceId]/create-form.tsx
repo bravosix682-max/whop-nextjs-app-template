@@ -4,6 +4,7 @@ import Link from "next/link";
 import { type ReactNode, useActionState, useEffect, useState } from "react";
 import { FEATURES, type Plan } from "@/lib/plans";
 import { Icon } from "./icons";
+import { DateTimePicker, Select } from "./pickers";
 import { QUICK, TEMPLATES } from "./templates";
 
 export type FormResult = { ok: boolean; message: string } | null;
@@ -15,11 +16,10 @@ type Initial = {
 	priority: string;
 };
 
-function iso(v: string) {
-	if (!v) return "";
-	const d = new Date(v);
-	return Number.isNaN(d.getTime()) ? "" : d.toISOString();
-}
+const TEMPLATE_GROUPS = TEMPLATES.map((g) => ({
+	label: g.group,
+	items: g.items.map((t) => ({ value: `${g.group}|${t.label}`, label: t.label })),
+}));
 
 function Panel({
 	title,
@@ -115,22 +115,11 @@ function FormFields({
 								{t.label}
 							</button>
 						))}
-						<select
-							className="an-select"
-							value=""
-							onChange={(e) => applyNiche(e.target.value)}
-						>
-							<option value="">More templates...</option>
-							{TEMPLATES.map((group) => (
-								<optgroup key={group.group} label={group.group}>
-									{group.items.map((t) => (
-										<option key={t.label} value={`${group.group}|${t.label}`}>
-											{t.label}
-										</option>
-									))}
-								</optgroup>
-							))}
-						</select>
+						<Select
+							placeholder="More templates"
+							groups={TEMPLATE_GROUPS}
+							onSelect={applyNiche}
+						/>
 					</div>
 				)}
 
@@ -285,42 +274,33 @@ function FormFields({
 					</Panel>
 
 					<Panel title="Schedule for later" lock={f.schedule ? undefined : "Pro"}>
-						<input
-							type="datetime-local"
-							className="an-input"
+						<DateTimePicker
 							value={schedule}
-							onChange={(e) => setSchedule(e.target.value)}
+							onChange={setSchedule}
 							disabled={!f.schedule}
+							placeholder="Pick date and time"
 						/>
-						{f.schedule && (
-							<input type="hidden" name="publish_at" value={iso(schedule)} />
-						)}
+						{f.schedule && <input type="hidden" name="publish_at" value={schedule} />}
 					</Panel>
 
 					<Panel title="Event countdown" lock={f.countdown ? undefined : "Pro"}>
-						<input
-							type="datetime-local"
-							className="an-input"
+						<DateTimePicker
 							value={eventAt}
-							onChange={(e) => setEventAt(e.target.value)}
+							onChange={setEventAt}
 							disabled={!f.countdown}
+							placeholder="Pick date and time"
 						/>
-						{f.countdown && (
-							<input type="hidden" name="event_at" value={iso(eventAt)} />
-						)}
+						{f.countdown && <input type="hidden" name="event_at" value={eventAt} />}
 					</Panel>
 
 					<Panel title="Auto-remove after" lock={f.expire ? undefined : "Pro"}>
-						<input
-							type="datetime-local"
-							className="an-input"
+						<DateTimePicker
 							value={expires}
-							onChange={(e) => setExpires(e.target.value)}
+							onChange={setExpires}
 							disabled={!f.expire}
+							placeholder="Pick date and time"
 						/>
-						{f.expire && (
-							<input type="hidden" name="expires_at" value={iso(expires)} />
-						)}
+						{f.expire && <input type="hidden" name="expires_at" value={expires} />}
 					</Panel>
 
 					<Panel title="Also send to" lock={f.pushSend ? undefined : "Business"}>

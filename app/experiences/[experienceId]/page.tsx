@@ -2,6 +2,7 @@ import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { cached, forget } from "@/lib/cache";
 import { notifyExperience } from "@/lib/notify";
 import {
 	asPlan,
@@ -31,10 +32,10 @@ import {
 import { whopsdk } from "@/lib/whop-sdk";
 import "./announcements.css";
 import { CreateForm, type FormResult } from "./create-form";
+import { CountUp, PostActions } from "./extras";
 import { Icon, type IconName } from "./icons";
 import {
 	AckButton,
-	AdminActions,
 	Countdown,
 	ExportButton,
 	PlanButton,
@@ -189,11 +190,15 @@ export default async function ExperiencePage({
 	const listP = listAnnouncements(experienceId)
 		.then((rows) => ({ rows, failed: false }))
 		.catch(() => ({ rows: [] as Announcement[], failed: true }));
-	const planP = getPlan(experienceId).catch(() => "starter" as Plan);
+	const planP = cached(`plan:${experienceId}`, 20_000, () =>
+		getPlan(experienceId),
+	).catch(() => "starter" as Plan);
 
 	// Ensure the user is logged in on whop.
 	const { userId } = await whopsdk.verifyUserToken(await headers());
-	const access = await whopsdk.users.checkAccess(experienceId, { id: userId });
+	const access = await cached(`access:${userId}:${experienceId}`, 60_000, () =>
+		whopsdk.users.checkAccess(experienceId, { id: userId }),
+	);
 	const isAdmin = String((access as any).access_level) === "admin";
 
 	const statsP = getStats(experienceId, userId).catch(
@@ -412,6 +417,7 @@ export default async function ExperiencePage({
 		"use server";
 		if (!canSwitchFree) return;
 		await setPlan(experienceId, asPlan(next));
+		forget(`plan:${experienceId}`);
 		revalidatePath(basePath);
 	}
 
@@ -454,7 +460,7 @@ export default async function ExperiencePage({
 						<span className="an-muted">{when(a.publish_at)}</span>
 					</div>
 					{creator && (
-						<AdminActions
+						<PostActions
 							id={a.id}
 							pinned={a.pinned}
 							editHref={`${basePath}?view=create&edit=${a.id}`}
@@ -619,14 +625,18 @@ export default async function ExperiencePage({
 						<span className="ico">
 							<Icon name="eye" size={18} />
 						</span>
-						<b>{totalViews.toLocaleString("en-US")}</b>
+						<b>
+							<CountUp value={totalViews} />
+						</b>
 						<span className="an-muted">Total views</span>
 					</div>
 					<div className="an-card an-stat">
 						<span className="ico">
 							<Icon name="users" size={18} />
 						</span>
-						<b>{totalReactions.toLocaleString("en-US")}</b>
+						<b>
+							<CountUp value={totalReactions} />
+						</b>
 						<span className="an-muted">Reactions</span>
 					</div>
 					<div className="an-card an-stat">
