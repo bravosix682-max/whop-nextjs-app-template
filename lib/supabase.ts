@@ -227,3 +227,92 @@ export async function castVote(id: string, userId: string, index: number) {
 		}),
 	});
 }
+
+export const PERIOD_DAYS = 30;
+export const GRACE_DAYS = 3;
+
+export type PlanInfo = {
+	plan: Plan;
+	stored: Plan;
+	paidUntil: string | null;
+	paidActive: boolean;
+};
+
+export async function getPlanInfo(experienceId: string): Promise<PlanInfo> {
+	const rows = (await request(
+		`app_settings?experience_id=eq.${enc(experienceId)}&select=plan,plan_paid_until&limit=1`,
+	)) as { plan: string; plan_paid_until: string | null }[] | null;
+	const stored = asPlan(rows?.[0]?.plan);
+	const until = rows?.[0]?.plan_paid_until ?? null;
+	const expired =
+		stored !== "starter" && until !== null && new Date(until).getTime() <= Date.now();
+	const plan: Plan = expired ? "starter" : stored;
+	const paidActive = stored !== "starter" && until !== null && !expired;
+	return { plan, stored, paidUntil: until, paidActive };
+}
+
+export async function setOwnerPlan(experienceId: string, plan: Plan) {
+	await request("app_settings?on_conflict=experience_id", {
+		method: "POST",
+		headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+		body: JSON.stringify({
+			experience_id: experienceId,
+			plan,
+			plan_paid_until: null,
+			updated_at: new Date().toISOString(),
+		}),
+	});
+}
+
+export async function claimPayment(
+	paymentId: string,
+	experienceId: string,
+	plan: Plan,
+): Promise<boolean> {
+	const rows = (await request("payment_events?on_conflict=payment_id", {
+		method: "POST",
+		headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+		body: JSON.stringify({
+			payment_id: paymentId,
+			experience_id: experienceId,
+			plan,
+		}),
+	})) as unknown[] | null;
+	return !!rows && rows.length > 0;
+}
+
+export async function activatePaid(opts: {
+	experienceId: string;
+	plan: Plan;
+	paidAt: Date;
+	paymentId: string;
+	paidBy: string | null;
+	membershipId: string | null;
+}) {
+	const until = new Date(
+		opts.paidAt.getTime() + (PERIOD_DAYS + GRACE_DAYS) * 86400000,
+	);
+	const row: Record<string, unknown> = {
+		experience_id: opts.experienceId,
+		plan: opts.plan,
+		plan_paid_until: until.toISOString(),
+		last_payment_id: opts.paymentId,
+		updated_at: new Date().toISOString(),
+	};
+	if (opts.paidBy) row.paid_by = opts.paidBy;
+	if (opts.membershipId) row.membership_id = opts.membershipId;
+	await request("app_settings?on_conflict=experience_id", {
+		method: "POST",
+		headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+		body: JSON.stringify(row),
+	});
+}
+
+export async function findByMembership(
+	membershipId: string,
+): Promise<{ experience_id: string; plan: string } | null> {
+	const rows = (await request(
+		`app_settings?membership_id=eq.${enc(membershipId)}&select=experience_id,plan&limit=1`,
+	)) as { experience_id: string; plan: string }[] | null;
+	return rows?.[0] ?? null;
+}

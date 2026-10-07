@@ -1,25 +1,28 @@
-import { waitUntil } from "@vercel/functions";
-import type { Payment } from "@whop/sdk/resources.js";
 import type { NextRequest } from "next/server";
+import { applyPayment } from "@/lib/payments";
 import { whopsdk } from "@/lib/whop-sdk";
 
 export async function POST(request: NextRequest): Promise<Response> {
-	// Validate the webhook to ensure it's from Whop
-	const requestBodyText = await request.text();
+	const bodyText = await request.text();
 	const headers = Object.fromEntries(request.headers);
-	const webhookData = whopsdk.webhooks.unwrap(requestBodyText, { headers });
 
-	// Handle the webhook event
-	if (webhookData.type === "payment.succeeded") {
-		waitUntil(handlePaymentSucceeded(webhookData.data));
+	// Make sure the message really comes from Whop.
+	let event: any;
+	try {
+		event = whopsdk.webhooks.unwrap(bodyText, { headers });
+	} catch {
+		return new Response("Invalid signature", { status: 401 });
 	}
 
-	// Make sure to return a 2xx status code quickly. Otherwise the webhook will be retried.
-	return new Response("OK", { status: 200 });
-}
+	if (event?.type === "payment.succeeded") {
+		try {
+			await applyPayment(event.data);
+		} catch (e) {
+			console.error("payment webhook failed", e);
+			// A non-2xx answer makes Whop try again later.
+			return new Response("Error", { status: 500 });
+		}
+	}
 
-async function handlePaymentSucceeded(payment: Payment) {
-	// This is a placeholder for a potentially long running operation
-	// In a real scenario, you might need to fetch user data, update a database, etc.
-	console.log("[PAYMENT SUCCEEDED]", payment);
+	return new Response("OK", { status: 200 });
 }

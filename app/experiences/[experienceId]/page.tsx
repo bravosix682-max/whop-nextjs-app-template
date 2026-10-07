@@ -18,19 +18,22 @@ import {
 	castVote,
 	createAnnouncement,
 	deleteAnnouncement,
+	GRACE_DAYS,
 	getAnnouncement,
-	getPlan,
+	getPlanInfo,
 	getStats,
 	listAnnouncements,
+	type PlanInfo,
 	recordViews,
 	type Stats,
+	setOwnerPlan,
 	setPinned,
-	setPlan,
 	toggleReaction,
 	updateAnnouncement,
 } from "@/lib/supabase";
 import { whopsdk } from "@/lib/whop-sdk";
 import "./announcements.css";
+import { type CheckoutStart, UpgradeButton } from "./billing-ui";
 import { CreateForm, type FormResult } from "./create-form";
 import { CountUp, PostActions } from "./extras";
 import { Icon, type IconName } from "./icons";
@@ -163,6 +166,14 @@ function when(iso: string) {
 	return diff > 0 ? `in ${label}` : `${label} ago`;
 }
 
+function fmtDate(d: Date) {
+	return d.toLocaleDateString("en-GB", {
+		day: "numeric",
+		month: "short",
+		year: "numeric",
+	});
+}
+
 function variantFor(userId: string, id: string) {
 	let h = 0;
 	const s = userId + id;
@@ -175,6 +186,13 @@ function csvCell(v: string | number) {
 	const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;
 	return `"${safe.replace(/"/g, '""')}"`;
 }
+
+const FALLBACK_INFO: PlanInfo = {
+	plan: "starter",
+	stored: "starter",
+	paidUntil: null,
+	paidActive: false,
+};
 
 export default async function ExperiencePage({
 	params,
@@ -190,9 +208,9 @@ export default async function ExperiencePage({
 	const listP = listAnnouncements(experienceId)
 		.then((rows) => ({ rows, failed: false }))
 		.catch(() => ({ rows: [] as Announcement[], failed: true }));
-	const planP = cached(`plan:${experienceId}`, 20_000, () =>
-		getPlan(experienceId),
-	).catch(() => "starter" as Plan);
+	const infoP = cached(`plan:${experienceId}`, 20_000, () =>
+		getPlanInfo(experienceId),
+	).catch(() => FALLBACK_INFO);
 
 	// Ensure the user is logged in on whop.
 	const { userId } = await whopsdk.verifyUserToken(await headers());
@@ -204,12 +222,13 @@ export default async function ExperiencePage({
 	const statsP = getStats(experienceId, userId).catch(
 		() => ({}) as Record<string, Stats>,
 	);
-	const [{ rows: all, failed: loadError }, plan, stats] = await Promise.all([
+	const [{ rows: all, failed: loadError }, planInfo, stats] = await Promise.all([
 		listP,
-		planP,
+		infoP,
 		statsP,
 	]);
 
+	const plan = planInfo.plan;
 	const f = FEATURES[plan];
 	const creator = isAdmin;
 	const view = creator
@@ -218,14 +237,12 @@ export default async function ExperiencePage({
 			: "feed"
 		: "feed";
 
-	// Owner-only free plan switching, until real billing is added.
-	// If OWNER_USER_IDS is not set yet, any admin can switch (test mode).
+	// Only the owner can switch plans for free (for testing).
 	const owners = (process.env.OWNER_USER_IDS ?? "")
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
-	const canSwitchFree =
-		isAdmin && (owners.length === 0 || owners.includes(userId));
+	const canSwitchFree = isAdmin && owners.includes(userId);
 
 	const now = Date.now();
 	const visible = creator ? all : all.filter((a) => isLiveAt(a, now));
@@ -412,13 +429,79 @@ export default async function ExperiencePage({
 		return { ok: true, message: "Saved." };
 	}
 
-	// Only the owner can switch plans for free (replaced by real billing later).
+	// Owner-only free plan switch, for testing.
 	async function choosePlan(next: string) {
 		"use server";
 		if (!canSwitchFree) return;
-		await setPlan(experienceId, asPlan(next));
+		await setOwnerPlan(experienceId, asPlan(next));
 		forget(`plan:${experienceId}`);
 		revalidatePath(basePath);
+	}
+
+	// Step 1 of paying: ask Whop to prepare the checkout.
+	async function startCheckout(target: string): Promise<CheckoutStart> {
+		"use server";
+		if (!isAdmin) return { ok: false, error: "Only admins can upgrade." };
+		const p = asPlan(target);
+		if (p === "starter") return { ok: false, error: "Choose Pro or Business." };
+
+		const current = await getPlanInfo(experienceId);
+		if (current.paidActive) {
+			return {
+				ok: false,
+				error:
+					current.stored === p
+						? "You are already on this plan."
+						: "Cancel your current plan in Whop first, then choose the new one.",
+			};
+		}
+
+		const companyId = process.env.WHOP_PAYOUT_COMPANY_ID;
+		if (!companyId) return { ok: false, error: "Billing is not set up yet." };
+
+		const price = Number(
+			process.env[p === "pro" ? "PRICE_PRO" : "PRICE_BUSINESS"] ??
+				PLAN_PRICES[p],
+		);
+		if (!Number.isFinite(price) || price <= 0) {
+			return { ok: false, error: "Invalid price setting." };
+		}
+
+		try {
+			const cfg: any = await whopsdk.checkoutConfigurations.create({
+				plan: {
+					company_id: companyId,
+					currency: "usd",
+					plan_type: "renewal",
+					initial_price: price,
+					renewal_price: price,
+					billing_period: 30,
+				},
+				metadata: {
+					app: "announcements",
+					experience_id: experienceId,
+					plan: p,
+					user_id: userId,
+				},
+			} as any);
+			const planId = cfg?.plan?.id ?? cfg?.plan_id;
+			if (!cfg?.id || !planId) {
+				return { ok: false, error: "Whop did not return a checkout." };
+			}
+			return { ok: true, id: String(cfg.id), planId: String(planId) };
+		} catch (e) {
+			const detail = e instanceof Error ? e.message.slice(0, 160) : "";
+			return { ok: false, error: `Could not start checkout. ${detail}` };
+		}
+	}
+
+	// Step 3 of paying: the page asks if the webhook has switched the plan yet.
+	async function checkPlan(): Promise<string> {
+		"use server";
+		if (!isAdmin) return "";
+		forget(`plan:${experienceId}`);
+		const i = await getPlanInfo(experienceId);
+		return i.plan;
 	}
 
 	// ---------- pieces of the page ----------
@@ -668,6 +751,14 @@ export default async function ExperiencePage({
 			</>
 		);
 	} else if (creator && view === "plans") {
+		const billingReady = !!process.env.WHOP_PAYOUT_COMPANY_ID;
+		const paidEnd =
+			planInfo.paidActive && planInfo.paidUntil
+				? new Date(
+						new Date(planInfo.paidUntil).getTime() - GRACE_DAYS * 86400000,
+					)
+				: null;
+
 		content = (
 			<>
 				<div className="an-head">
@@ -691,29 +782,67 @@ export default async function ExperiencePage({
 									<li key={text}>{text}</li>
 								))}
 							</ul>
-							<PlanButton
-								plan={c.plan}
-								current={plan === c.plan}
-								label={
-									c.plan === "starter"
-										? "Switch to Starter"
-										: `Upgrade to ${PLAN_NAMES[c.plan]}`
-								}
-								primary={c.plan === "pro"}
-								locked={canSwitchFree ? undefined : "Billing coming soon"}
-								onChoose={choosePlan}
-							/>
+							{plan === c.plan ? (
+								<button type="button" className="an-btn-ghost" disabled>
+									Current plan
+								</button>
+							) : c.plan === "starter" ? (
+								<button type="button" className="an-btn-ghost" disabled>
+									{planInfo.paidActive ? "Applies when your plan ends" : "Free plan"}
+								</button>
+							) : planInfo.paidActive ? (
+								<button type="button" className="an-btn-ghost" disabled>
+									Cancel your current plan first
+								</button>
+							) : !billingReady ? (
+								<button type="button" className="an-btn-ghost" disabled>
+									Billing is being set up
+								</button>
+							) : (
+								<UpgradeButton
+									plan={c.plan}
+									label={`Upgrade to ${PLAN_NAMES[c.plan]}`}
+									primary={c.plan === "pro"}
+									startCheckout={startCheckout}
+									checkPlan={checkPlan}
+								/>
+							)}
 						</div>
 					))}
 				</div>
-				{canSwitchFree ? (
+
+				{paidEnd ? (
 					<p className="an-muted">
-						Owner controls: plan changes apply instantly on this community.
-						Customers will pay through Whop checkout once billing is added.
-						Your Whop user ID: {userId}
+						Your {PLAN_NAMES[plan]} plan is active, paid through {fmtDate(paidEnd)}.
+						To cancel or change plans, manage your subscription in your Whop
+						account. You keep your plan until the paid period ends.
 					</p>
 				) : (
-					<p className="an-muted">Paid plans are coming soon.</p>
+					<p className="an-muted">
+						Payments are handled securely by Whop checkout. Your plan switches on
+						as soon as the payment goes through.
+					</p>
+				)}
+
+				{canSwitchFree && (
+					<div className="an-card">
+						<h2 className="an-title">Owner tools</h2>
+						<p className="an-muted">
+							Free plan switch for testing. Customers never see this. Your Whop
+							user ID: {userId}
+						</p>
+						<div className="an-row">
+							{(["starter", "pro", "business"] as Plan[]).map((p) => (
+								<PlanButton
+									key={p}
+									plan={p}
+									current={planInfo.stored === p && !planInfo.paidActive}
+									label={`Set ${PLAN_NAMES[p]}`}
+									onChoose={choosePlan}
+								/>
+							))}
+						</div>
+					</div>
 				)}
 			</>
 		);
