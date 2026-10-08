@@ -8,8 +8,8 @@ export const PLAN_NAMES: Record<Plan, string> = {
 
 export const PLAN_PRICES: Record<Plan, number> = {
 	starter: 0,
-	pro: 19,
-	business: 49,
+	pro: 6,
+	business: 14,
 };
 
 export const EMOJIS = ["🔥", "❤️", "👏", "🎉", "👍"];

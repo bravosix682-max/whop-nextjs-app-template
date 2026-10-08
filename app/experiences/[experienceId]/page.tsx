@@ -457,12 +457,17 @@ export default async function ExperiencePage({
 		}
 
 		const companyId = process.env.WHOP_PAYOUT_COMPANY_ID;
-		if (!companyId) return { ok: false, error: "Billing is not set up yet." };
+		const productId = process.env.WHOP_PRODUCT_ID;
+		if (!companyId || !productId) {
+			return { ok: false, error: "Billing is not set up yet." };
+		}
 
-		const price = Number(
-			process.env[p === "pro" ? "PRICE_PRO" : "PRICE_BUSINESS"] ??
-				PLAN_PRICES[p],
-		);
+				// A test price only ever applies to the owner, never to customers.
+		const testPrice = canSwitchFree
+			? Number(process.env[p === "pro" ? "PRICE_PRO" : "PRICE_BUSINESS"])
+			: Number.NaN;
+		const price =
+			Number.isFinite(testPrice) && testPrice > 0 ? testPrice : PLAN_PRICES[p];
 		if (!Number.isFinite(price) || price <= 0) {
 			return { ok: false, error: "Invalid price setting." };
 		}
@@ -471,6 +476,8 @@ export default async function ExperiencePage({
 			const cfg: any = await whopsdk.checkoutConfigurations.create({
 				plan: {
 					company_id: companyId,
+				   company_id: companyId,
+					product_id: productId,
 					currency: "usd",
 					plan_type: "renewal",
 					initial_price: price,
@@ -751,7 +758,8 @@ export default async function ExperiencePage({
 			</>
 		);
 	} else if (creator && view === "plans") {
-		const billingReady = !!process.env.WHOP_PAYOUT_COMPANY_ID;
+			const billingReady =
+			   !!process.env.WHOP_PAYOUT_COMPANY_ID && !!process.env.WHOP_PRODUCT_ID;
 		const paidEnd =
 			planInfo.paidActive && planInfo.paidUntil
 				? new Date(
