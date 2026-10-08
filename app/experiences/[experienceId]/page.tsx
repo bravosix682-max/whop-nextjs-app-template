@@ -476,10 +476,9 @@ export default async function ExperiencePage({
 			const cfg: any = await whopsdk.checkoutConfigurations.create({
 				plan: {
 					company_id: companyId,
-				   company_id: companyId,
-               product_id: productId,
-               currency: "usd",
-               plan_type: "renewal",
+					product_id: productId,
+					currency: "usd",
+					plan_type: "renewal",
 					initial_price: price,
 					renewal_price: price,
 					billing_period: 30,
