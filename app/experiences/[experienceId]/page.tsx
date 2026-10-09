@@ -3,7 +3,13 @@ import { headers } from "next/headers";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { cached, forget } from "@/lib/cache";
-import { notifyExperience } from "@/lib/notify";
+import { deliver, emailReady, sendDiscord, validDiscordUrl } from "@/lib/deliver";
+import {
+	type Channels,
+	getDiscordWebhook,
+	scheduleDelivery,
+	setDiscordWebhook,
+} from "@/lib/delivery-db";
 import {
 	asPlan,
 	EMOJIS,
@@ -52,41 +58,49 @@ const UUID = /^[0-9a-f-]{36}$/i;
 const URL_PATTERN = /(https?:\/\/[^\s<]+)/g;
 const IMAGE_URL = /\.(png|jpe?g|gif|webp)(\?[^\s]*)?$/i;
 
-const PLAN_CARDS: { plan: Plan; blurb: string; items: string[] }[] = [
-	{
-		plan: "starter",
-		blurb: "For new communities getting started",
-		items: [
-			"5 live announcements",
-			"Rich formatting and emoji reactions",
-			"Pin 1 announcement",
-			"Priority labels",
-			"Basic view count",
-		],
-	},
-	{
-		plan: "pro",
-		blurb: "For creators who need members to actually read",
-		items: [
-			"Unlimited announcements",
-			"Schedule posts for later",
-			"Polls inside announcements",
-			"Must-acknowledge posts with read receipts",
-			"Event countdowns and auto-expiry",
-			"Full engagement analytics",
-		],
-	},
-	{
-		plan: "business",
-		blurb: "For brands running serious communities",
-		items: [
-			"Everything in Pro",
-			"Push notifications to all members at once",
-			"A/B test two headlines",
-			"Export analytics to CSV",
-		],
-	},
-];
+function planCards(withEmail: boolean): {
+	plan: Plan;
+	blurb: string;
+	items: string[];
+}[] {
+	return [
+		{
+			plan: "starter",
+			blurb: "For new communities getting started",
+			items: [
+				"5 live announcements",
+				"Rich formatting and emoji reactions",
+				"Pin 1 announcement",
+				"Priority labels",
+				"Basic view count",
+			],
+		},
+		{
+			plan: "pro",
+			blurb: "For creators who need members to actually read",
+			items: [
+				"Unlimited announcements",
+				"Schedule posts for later",
+				"Polls inside announcements",
+				"Must-acknowledge posts with read receipts",
+				"Event countdowns and auto-expiry",
+				"Full engagement analytics",
+			],
+		},
+		{
+			plan: "business",
+			blurb: "For brands running serious communities",
+			items: [
+				"Everything in Pro",
+				withEmail
+					? "Send to Discord, email and push at once"
+					: "Send to Discord and push at once",
+				"A/B test two headlines",
+				"Export analytics to CSV",
+			],
+		},
+	];
+}
 
 function renderText(text: string, keyBase: string): ReactNode[] {
 	return text
@@ -208,7 +222,7 @@ export default async function ExperiencePage({
 	const listP = listAnnouncements(experienceId)
 		.then((rows) => ({ rows, failed: false }))
 		.catch(() => ({ rows: [] as Announcement[], failed: true }));
-	const infoP = cached(`plan:${experienceId}`, 20_000, () =>
+	const infoP = cached(`plan:${experienceId}`, 3_000, () =>
 		getPlanInfo(experienceId),
 	).catch(() => FALLBACK_INFO);
 
@@ -222,15 +236,17 @@ export default async function ExperiencePage({
 	const statsP = getStats(experienceId, userId).catch(
 		() => ({}) as Record<string, Stats>,
 	);
-	const [{ rows: all, failed: loadError }, planInfo, stats] = await Promise.all([
-		listP,
-		infoP,
-		statsP,
-	]);
+	const hookP = isAdmin
+		? getDiscordWebhook(experienceId).catch(() => null)
+		: Promise.resolve(null);
+	const [{ rows: all, failed: loadError }, planInfo, stats, discordHook] =
+		await Promise.all([listP, infoP, statsP, hookP]);
 
 	const plan = planInfo.plan;
 	const f = FEATURES[plan];
 	const creator = isAdmin;
+	const emailOn = emailReady();
+	const discordConnected = !!discordHook;
 	const view = creator
 		? ["create", "analytics", "plans"].includes(viewParam ?? "")
 			? (viewParam as string)
@@ -355,6 +371,12 @@ export default async function ExperiencePage({
 			if (question && options.length >= 2) poll = { question, options };
 		}
 
+		const channels: Channels = {
+			push: f.pushSend && formData.get("push") === "on",
+			discord: f.pushSend && formData.get("discord") === "on",
+			email: f.pushSend && emailOn && formData.get("email") === "on",
+		};
+		const anyChannel = channels.push || channels.discord || channels.email;
 		const scheduledLater =
 			!!publishAt && new Date(publishAt).getTime() > Date.now();
 
@@ -376,18 +398,23 @@ export default async function ExperiencePage({
 		revalidatePath(basePath);
 
 		let message = scheduledLater ? "Scheduled." : "Posted.";
-		if (f.pushSend && formData.get("push") === "on") {
+		if (anyChannel) {
 			if (scheduledLater) {
-				message += " Push is not sent for scheduled posts yet.";
+				await scheduleDelivery(id, channels);
+				const names = [
+					channels.push && "push",
+					channels.discord && "Discord",
+					channels.email && "email",
+				]
+					.filter(Boolean)
+					.join(", ");
+				message += ` It will be sent to ${names} at the scheduled time.`;
 			} else {
-				const r = await notifyExperience({
-					experienceId,
-					title,
-					content: body.replace(/\s+/g, " ").slice(0, 140),
-				});
-				message += r.ok
-					? " Members were notified."
-					: ` The push notification failed. ${r.detail}`;
+				const results = await deliver(
+					{ id, experienceId, title, body },
+					channels,
+				);
+				message += ` ${results.join(" ")}`;
 			}
 		}
 		return { ok: true, message };
@@ -429,6 +456,40 @@ export default async function ExperiencePage({
 		return { ok: true, message: "Saved." };
 	}
 
+	async function saveDiscord(url: string): Promise<string> {
+		"use server";
+		if (!isAdmin) return "Only admins can do this.";
+		if (!f.pushSend) return "Sending to Discord is on the Business plan.";
+		const link = url.trim();
+		if (!validDiscordUrl(link)) {
+			return "That does not look like a Discord webhook link.";
+		}
+		await setDiscordWebhook(experienceId, link);
+		revalidatePath(basePath);
+		return "Discord connected.";
+	}
+
+	async function testDiscord(): Promise<string> {
+		"use server";
+		if (!isAdmin) return "Only admins can do this.";
+		const hook = await getDiscordWebhook(experienceId);
+		if (!hook) return "Discord is not connected yet.";
+		const r = await sendDiscord(
+			hook,
+			"Test announcement",
+			"Discord is connected. Your real announcements will appear here.",
+		);
+		return r.ok ? "Test message sent to Discord." : `Discord failed. ${r.detail}`;
+	}
+
+	async function removeDiscord(): Promise<string> {
+		"use server";
+		if (!isAdmin) return "Only admins can do this.";
+		await setDiscordWebhook(experienceId, null);
+		revalidatePath(basePath);
+		return "Discord disconnected.";
+	}
+
 	// Owner-only free plan switch, for testing.
 	async function choosePlan(next: string) {
 		"use server";
@@ -462,7 +523,7 @@ export default async function ExperiencePage({
 			return { ok: false, error: "Billing is not set up yet." };
 		}
 
-				// A test price only ever applies to the owner, never to customers.
+		// A test price only ever applies to the owner, never to customers.
 		const testPrice = canSwitchFree
 			? Number(process.env[p === "pro" ? "PRICE_PRO" : "PRICE_BUSINESS"])
 			: Number.NaN;
@@ -479,7 +540,7 @@ export default async function ExperiencePage({
 					product_id: productId,
 					currency: "usd",
 					plan_type: "renewal",
-					initial_price: price,
+					initial_price: 0,
 					renewal_price: price,
 					billing_period: 30,
 				},
@@ -624,6 +685,13 @@ export default async function ExperiencePage({
 					mode={editing ? "edit" : "create"}
 					id={editing ? editing.id : ""}
 					liveCount={liveCount}
+					delivery={{
+						discordConnected,
+						emailReady: emailOn,
+						onSaveDiscord: saveDiscord,
+						onTestDiscord: testDiscord,
+						onRemoveDiscord: removeDiscord,
+					}}
 					initial={
 						editing
 							? {
@@ -757,8 +825,8 @@ export default async function ExperiencePage({
 			</>
 		);
 	} else if (creator && view === "plans") {
-			const billingReady =
-			   !!process.env.WHOP_PAYOUT_COMPANY_ID && !!process.env.WHOP_PRODUCT_ID;
+		const billingReady =
+			!!process.env.WHOP_PAYOUT_COMPANY_ID && !!process.env.WHOP_PRODUCT_ID;
 		const paidEnd =
 			planInfo.paidActive && planInfo.paidUntil
 				? new Date(
@@ -773,7 +841,7 @@ export default async function ExperiencePage({
 					<p className="an-muted">Start free. Upgrade when your community grows.</p>
 				</div>
 				<div className="an-plans">
-					{PLAN_CARDS.map((c) => (
+					{planCards(emailOn).map((c) => (
 						<div
 							key={c.plan}
 							className={`an-card an-plan${c.plan === "pro" ? " pop" : ""}`}
@@ -906,7 +974,7 @@ export default async function ExperiencePage({
 							<small>
 								{plan === "starter"
 									? "Scheduling, polls, read receipts"
-									: "A/B tests, push, CSV export"}
+									: "A/B tests, Discord, push, CSV export"}
 							</small>
 						</Link>
 					)}

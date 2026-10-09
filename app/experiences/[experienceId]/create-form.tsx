@@ -1,7 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useActionState, useEffect, useState } from "react";
+import {
+	type ReactNode,
+	useActionState,
+	useEffect,
+	useState,
+	useTransition,
+} from "react";
 import { FEATURES, type Plan } from "@/lib/plans";
 import { Icon } from "./icons";
 import { DateTimePicker, Select } from "./pickers";
@@ -14,6 +20,14 @@ type Initial = {
 	body: string;
 	pinned: boolean;
 	priority: string;
+};
+
+type Delivery = {
+	discordConnected: boolean;
+	emailReady: boolean;
+	onSaveDiscord: (url: string) => Promise<string>;
+	onTestDiscord: () => Promise<string>;
+	onRemoveDiscord: () => Promise<string>;
 };
 
 const TEMPLATE_GROUPS = TEMPLATES.map((g) => ({
@@ -45,6 +59,117 @@ function Panel({
 	);
 }
 
+function ChannelChip({
+	name,
+	label,
+	checked,
+	onChange,
+	disabled,
+}: {
+	name: string;
+	label: string;
+	checked: boolean;
+	onChange: (v: boolean) => void;
+	disabled?: boolean;
+}) {
+	return (
+		<label
+			className={`an-chip${checked ? " on" : ""}`}
+			style={disabled ? { opacity: 0.5 } : undefined}
+		>
+			<input
+				type="checkbox"
+				name={name}
+				hidden
+				checked={checked}
+				onChange={(e) => onChange(e.target.checked)}
+				disabled={disabled}
+			/>
+			{label}
+		</label>
+	);
+}
+
+function DiscordBox({
+	connected,
+	onSave,
+	onTest,
+	onRemove,
+}: {
+	connected: boolean;
+	onSave: (url: string) => Promise<string>;
+	onTest: () => Promise<string>;
+	onRemove: () => Promise<string>;
+}) {
+	const [url, setUrl] = useState("");
+	const [msg, setMsg] = useState("");
+	const [pending, start] = useTransition();
+
+	function run(job: () => Promise<string>, after?: () => void) {
+		start(async () => {
+			setMsg(await job());
+			after?.();
+		});
+	}
+
+	return (
+		<div className="an-panel" style={{ background: "var(--bg)" }}>
+			<p className="an-muted">
+				{connected
+					? "Discord is connected. Announcements you send to Discord appear in the channel you chose."
+					: "In Discord open Server Settings, then Integrations, then Webhooks, then New Webhook. Pick the channel, copy the Webhook URL and paste it here."}
+			</p>
+			<input
+				className="an-input"
+				placeholder={
+					connected
+						? "Paste a new webhook URL to replace it"
+						: "https://discord.com/api/webhooks/..."
+				}
+				value={url}
+				onChange={(e) => setUrl(e.target.value)}
+				onKeyDown={(e) => {
+					if (e.key === "Enter") {
+						e.preventDefault();
+						if (url.trim()) run(() => onSave(url), () => setUrl(""));
+					}
+				}}
+			/>
+			<div className="an-row">
+				<button
+					type="button"
+					className="an-btn-ghost"
+					disabled={pending || !url.trim()}
+					onClick={() => run(() => onSave(url), () => setUrl(""))}
+				>
+					Save
+				</button>
+				{connected ? (
+					<>
+						<button
+							type="button"
+							className="an-btn-ghost"
+							disabled={pending}
+							onClick={() => run(onTest)}
+						>
+							Send test
+						</button>
+						<button
+							type="button"
+							className="an-btn-ghost"
+							disabled={pending}
+							onClick={() => run(onRemove)}
+						>
+							Disconnect
+						</button>
+					</>
+				) : null}
+			</div>
+			{msg ? <p className="an-muted">{msg}</p> : null}
+		</div>
+	);
+}
+
 function FormFields({
 	formAction,
 	pending,
@@ -54,6 +179,7 @@ function FormFields({
 	initial,
 	cancelHref,
 	liveCount,
+	delivery,
 }: {
 	formAction: (formData: FormData) => void;
 	pending: boolean;
@@ -63,6 +189,7 @@ function FormFields({
 	initial?: Initial;
 	cancelHref?: string;
 	liveCount: number;
+	delivery: Delivery;
 }) {
 	const f = FEATURES[plan];
 	const [rid, setRid] = useState("");
@@ -76,6 +203,9 @@ function FormFields({
 	const [expires, setExpires] = useState("");
 	const [ack, setAck] = useState(false);
 	const [push, setPush] = useState(false);
+	const [discord, setDiscord] = useState(false);
+	const [email, setEmail] = useState(false);
+	const [manage, setManage] = useState(false);
 
 	useEffect(() => {
 		setRid(crypto.randomUUID());
@@ -305,18 +435,58 @@ function FormFields({
 
 					<Panel title="Also send to" lock={f.pushSend ? undefined : "Business"}>
 						<div className="an-chip-row">
-							<label className={`an-chip${push ? " on" : ""}`}>
-								<input
-									type="checkbox"
-									name="push"
-									hidden
-									checked={push}
-									onChange={(e) => setPush(e.target.checked)}
+							{delivery.discordConnected ? (
+								<ChannelChip
+									name="discord"
+									label="Discord"
+									checked={discord}
+									onChange={setDiscord}
 									disabled={!f.pushSend}
 								/>
-								Push
-							</label>
+							) : (
+								<button
+									type="button"
+									className="an-chip"
+									disabled={!f.pushSend}
+									onClick={() => setManage(true)}
+								>
+									Discord: connect
+								</button>
+							)}
+							{delivery.emailReady && (
+								<ChannelChip
+									name="email"
+									label="Email"
+									checked={email}
+									onChange={setEmail}
+									disabled={!f.pushSend}
+								/>
+							)}
+							<ChannelChip
+								name="push"
+								label="Push"
+								checked={push}
+								onChange={setPush}
+								disabled={!f.pushSend}
+							/>
 						</div>
+						{f.pushSend && delivery.discordConnected && (
+							<button
+								type="button"
+								className="an-link-btn"
+								onClick={() => setManage(!manage)}
+							>
+								{manage ? "Hide Discord settings" : "Manage Discord"}
+							</button>
+						)}
+						{f.pushSend && manage && (
+							<DiscordBox
+								connected={delivery.discordConnected}
+								onSave={delivery.onSaveDiscord}
+								onTest={delivery.onTestDiscord}
+								onRemove={delivery.onRemoveDiscord}
+							/>
+						)}
 					</Panel>
 				</div>
 			)}
@@ -332,6 +502,7 @@ export function CreateForm({
 	initial,
 	cancelHref,
 	liveCount,
+	delivery,
 }: {
 	action: (prev: FormResult, formData: FormData) => Promise<FormResult>;
 	plan: Plan;
@@ -340,6 +511,7 @@ export function CreateForm({
 	initial?: Initial;
 	cancelHref?: string;
 	liveCount: number;
+	delivery: Delivery;
 }) {
 	const [state, formAction, pending] = useActionState(
 		action,
@@ -366,6 +538,7 @@ export function CreateForm({
 				initial={initial}
 				cancelHref={cancelHref}
 				liveCount={liveCount}
+				delivery={delivery}
 			/>
 		</>
 	);
