@@ -7,56 +7,51 @@ import {
 	useEffect,
 	useState,
 } from "react";
-import { Icon } from "./icons";
 
-type Theme = "dark" | "light";
+export type ThemeMode = "system" | "light" | "dark";
 
 const FONT_URL =
 	"https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap";
 
-const ThemeContext = createContext<{ theme: Theme; toggle: () => void }>({
-	theme: "dark",
-	toggle: () => {},
+const ThemeContext = createContext<{
+	mode: ThemeMode;
+	setMode: (m: ThemeMode) => void;
+}>({
+	mode: "system",
+	setMode: () => {},
 });
 
 export function Shell({ children }: { children: ReactNode }) {
-	const [theme, setTheme] = useState<Theme>("dark");
+	const [mode, setModeState] = useState<ThemeMode>("system");
 
 	useEffect(() => {
 		try {
 			const saved = localStorage.getItem("an-theme");
-			if (saved === "light" || saved === "dark") setTheme(saved);
+			if (saved === "light" || saved === "dark" || saved === "system") {
+				setModeState(saved);
+			}
 		} catch {}
 	}, []);
 
-	function toggle() {
-		setTheme((t) => {
-			const next: Theme = t === "dark" ? "light" : "dark";
-			try {
-				localStorage.setItem("an-theme", next);
-			} catch {}
-			return next;
-		});
+	function setMode(m: ThemeMode) {
+		setModeState(m);
+		try {
+			localStorage.setItem("an-theme", m);
+		} catch {}
 	}
 
 	return (
-		<ThemeContext.Provider value={{ theme, toggle }}>
+		<ThemeContext.Provider value={{ mode, setMode }}>
 			<link rel="preconnect" href="https://fonts.googleapis.com" />
 			<link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
 			<link rel="stylesheet" href={FONT_URL} />
-			<div className="an-root" data-theme={theme}>
+			<div className="an-root" data-theme={mode}>
 				{children}
 			</div>
 		</ThemeContext.Provider>
 	);
 }
 
-export function ThemeToggle() {
-	const { theme, toggle } = useContext(ThemeContext);
-	return (
-		<button type="button" className="an-theme" onClick={toggle}>
-			<Icon name={theme === "dark" ? "sun" : "moon"} size={16} />
-			{theme === "dark" ? "Light mode" : "Dark mode"}
-		</button>
-	);
+export function useThemeMode() {
+	return useContext(ThemeContext);
 }

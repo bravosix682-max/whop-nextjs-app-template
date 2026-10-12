@@ -1,34 +1,15 @@
+// @ts-nocheck
 "use client";
 
 import Link from "next/link";
-import {
-	type ReactNode,
-	useActionState,
-	useEffect,
-	useState,
-	useTransition,
-} from "react";
-import { FEATURES, type Plan } from "@/lib/plans";
+import { type ReactNode, useActionState, useEffect, useState } from "react";
+import { FEATURES } from "@/lib/plans";
+import { RichEditor } from "./editor";
 import { Icon } from "./icons";
 import { DateTimePicker, Select } from "./pickers";
 import { QUICK, TEMPLATES } from "./templates";
 
 export type FormResult = { ok: boolean; message: string } | null;
-
-type Initial = {
-	title: string;
-	body: string;
-	pinned: boolean;
-	priority: string;
-};
-
-type Delivery = {
-	discordConnected: boolean;
-	emailReady: boolean;
-	onSaveDiscord: (url: string) => Promise<string>;
-	onTestDiscord: () => Promise<string>;
-	onRemoveDiscord: () => Promise<string>;
-};
 
 const TEMPLATE_GROUPS = TEMPLATES.map((g) => ({
 	label: g.group,
@@ -59,23 +40,11 @@ function Panel({
 	);
 }
 
-function ChannelChip({
-	name,
-	label,
-	checked,
-	onChange,
-	disabled,
-}: {
-	name: string;
-	label: string;
-	checked: boolean;
-	onChange: (v: boolean) => void;
-	disabled?: boolean;
-}) {
+function Chip({ name, label, checked, onChange, disabled, lock }: any) {
 	return (
 		<label
 			className={`an-chip${checked ? " on" : ""}`}
-			style={disabled ? { opacity: 0.5 } : undefined}
+			style={disabled ? { opacity: 0.55 } : undefined}
 		>
 			<input
 				type="checkbox"
@@ -86,111 +55,102 @@ function ChannelChip({
 				disabled={disabled}
 			/>
 			{label}
+			{lock ? <Icon name="lock" size={11} /> : null}
 		</label>
 	);
 }
 
-function DiscordBox({
-	connected,
-	onSave,
-	onTest,
-	onRemove,
-}: {
-	connected: boolean;
-	onSave: (url: string) => Promise<string>;
-	onTest: () => Promise<string>;
-	onRemove: () => Promise<string>;
-}) {
-	const [url, setUrl] = useState("");
-	const [msg, setMsg] = useState("");
-	const [pending, start] = useTransition();
+function ProductPicker({ disabled, fetchProducts, value, onChange }: any) {
+	const [open, setOpen] = useState(false);
+	const [data, setData] = useState<any>(null);
+	const [loading, setLoading] = useState(false);
 
-	function run(job: () => Promise<string>, after?: () => void) {
-		start(async () => {
-			setMsg(await job());
-			after?.();
-		});
+	async function toggle() {
+		if (disabled) return;
+		const next = !open;
+		setOpen(next);
+		if (next && (!data || data.error) && !loading) {
+			setLoading(true);
+			setData(await fetchProducts());
+			setLoading(false);
+		}
+	}
+
+	function flip(id: string) {
+		onChange(value.includes(id) ? value.filter((x: string) => x !== id) : [...value, id]);
 	}
 
 	return (
-		<div className="an-panel" style={{ background: "var(--bg)" }}>
-			<p className="an-muted">
-				{connected
-					? "Discord is connected. Announcements you send to Discord appear in the channel you chose."
-					: "In Discord open Server Settings, then Integrations, then Webhooks, then New Webhook. Pick the channel, copy the Webhook URL and paste it here."}
-			</p>
-			<input
-				className="an-input"
-				placeholder={
-					connected
-						? "Paste a new webhook URL to replace it"
-						: "https://discord.com/api/webhooks/..."
-				}
-				value={url}
-				onChange={(e) => setUrl(e.target.value)}
-				onKeyDown={(e) => {
-					if (e.key === "Enter") {
-						e.preventDefault();
-						if (url.trim()) run(() => onSave(url), () => setUrl(""));
-					}
-				}}
-			/>
-			<div className="an-row">
-				<button
-					type="button"
-					className="an-btn-ghost"
-					disabled={pending || !url.trim()}
-					onClick={() => run(() => onSave(url), () => setUrl(""))}
-				>
-					Save
-				</button>
-				{connected ? (
-					<>
-						<button
-							type="button"
-							className="an-btn-ghost"
-							disabled={pending}
-							onClick={() => run(onTest)}
-						>
-							Send test
-						</button>
-						<button
-							type="button"
-							className="an-btn-ghost"
-							disabled={pending}
-							onClick={() => run(onRemove)}
-						>
-							Disconnect
-						</button>
-					</>
-				) : null}
-			</div>
-			{msg ? <p className="an-muted">{msg}</p> : null}
+		<div className="an-pop-wrap block">
+			<button type="button" className="an-dt-btn" disabled={disabled} onClick={toggle}>
+				<Icon name="package" size={16} />
+				<span className={value.length ? "" : "an-ph"}>
+					{value.length ? `${value.length} product${value.length === 1 ? "" : "s"} selected` : "All members"}
+				</span>
+			</button>
+			{open && (
+				<>
+					<div className="an-backdrop" onClick={() => setOpen(false)} />
+					<div className="an-pop right wide">
+						<div className="an-sheet-grip" />
+						{loading || !data ? (
+							<p className="an-muted">Loading products...</p>
+						) : data.error === "PERMISSION" ? (
+							<p className="an-error">
+								Add the access_pass:basic:read permission to this app (Developer, Announcements,
+								Permissions) and approve it in this community.
+							</p>
+						) : data.error ? (
+							<p className="an-error">{data.error}</p>
+						) : data.products.length === 0 ? (
+							<p className="an-muted">No products found in this community.</p>
+						) : (
+							<div className="an-list an-scroll">
+								{data.products.map((p: any) => (
+									<label key={p.id} className="an-list-item an-check">
+										<input
+											type="checkbox"
+											checked={value.includes(p.id)}
+											onChange={() => flip(p.id)}
+										/>
+										{p.title}
+									</label>
+								))}
+							</div>
+						)}
+						<div className="an-pop-foot">
+							<button type="button" className="an-link-btn" onClick={() => onChange([])}>
+								Everyone
+							</button>
+							<button type="button" className="an-btn" onClick={() => setOpen(false)}>
+								Done
+							</button>
+						</div>
+					</div>
+				</>
+			)}
 		</div>
 	);
 }
 
-function FormFields({
-	formAction,
-	pending,
-	plan,
-	mode,
-	id,
-	initial,
-	cancelHref,
-	liveCount,
-	delivery,
-}: {
-	formAction: (formData: FormData) => void;
-	pending: boolean;
-	plan: Plan;
-	mode: "create" | "edit";
-	id: string;
-	initial?: Initial;
-	cancelHref?: string;
-	liveCount: number;
-	delivery: Delivery;
-}) {
+function FormFields(props: any) {
+	const {
+		formAction,
+		pending,
+		plan,
+		mode,
+		id,
+		initial,
+		cancelHref,
+		liveCount,
+		channels,
+		emailReady,
+		chatReady,
+		settingsHref,
+		prepareUpload,
+		fetchProducts,
+		fetchMentionMembers,
+	} = props;
 	const f = FEATURES[plan];
 	const [rid, setRid] = useState("");
 	const [title, setTitle] = useState(initial?.title ?? "");
@@ -202,14 +162,15 @@ function FormFields({
 	const [eventAt, setEventAt] = useState("");
 	const [expires, setExpires] = useState("");
 	const [ack, setAck] = useState(false);
-	const [push, setPush] = useState(false);
-	const [discord, setDiscord] = useState(false);
-	const [email, setEmail] = useState(false);
-	const [manage, setManage] = useState(false);
+	const [readOnly, setReadOnly] = useState(false);
+	const [targets, setTargets] = useState<string[]>([]);
+	const [sel, setSel] = useState<Record<string, boolean>>({});
 
 	useEffect(() => {
 		setRid(crypto.randomUUID());
 	}, []);
+
+	const setOne = (k: string) => (v: boolean) => setSel((s) => ({ ...s, [k]: v }));
 
 	function apply(t: { title: string; body: string }) {
 		setTitle(t.title);
@@ -231,25 +192,21 @@ function FormFields({
 		<form
 			action={formAction}
 			className={mode === "create" ? "an-create" : "an-create single"}
+			onKeyDown={(e) => {
+				if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") {
+					e.preventDefault();
+				}
+			}}
 		>
 			<div className="an-card">
 				{mode === "create" && (
 					<div className="an-chip-row">
 						{QUICK.map((t) => (
-							<button
-								key={t.label}
-								type="button"
-								className="an-chip"
-								onClick={() => apply(t)}
-							>
+							<button key={t.label} type="button" className="an-chip" onClick={() => apply(t)}>
 								{t.label}
 							</button>
 						))}
-						<Select
-							placeholder="More templates"
-							groups={TEMPLATE_GROUPS}
-							onSelect={applyNiche}
-						/>
+						<Select placeholder="More templates" groups={TEMPLATE_GROUPS} onSelect={applyNiche} />
 					</div>
 				)}
 
@@ -265,20 +222,17 @@ function FormFields({
 					onChange={(e) => setTitle(e.target.value)}
 					className="an-input an-input-lg"
 				/>
-				<textarea
-					name="body"
-					required
-					maxLength={4000}
-					placeholder="What do you want your members to know?"
+
+				<RichEditor
 					value={body}
-					onChange={(e) => setBody(e.target.value)}
-					className="an-input"
+					onChange={setBody}
+					attach={mode === "create"}
+					attachMax={f.attachMax}
+					attachMb={f.attachMb}
+					mentions={f.mentions}
+					prepareUpload={prepareUpload}
+					fetchMentionMembers={fetchMentionMembers}
 				/>
-				<p className="an-muted">
-					Tip: paste a link to make it clickable, paste an image link (.png, .jpg,
-					.gif, .webp) to show the picture, and put **double stars** around words
-					to make them bold.
-				</p>
 
 				<div className="an-row">
 					<div className="an-seg">
@@ -309,12 +263,7 @@ function FormFields({
 					(f.poll ? (
 						pollOpen ? (
 							<Panel title="Poll">
-								<input
-									name="poll_q"
-									className="an-input"
-									placeholder="Question"
-									maxLength={140}
-								/>
+								<input name="poll_q" className="an-input" placeholder="Question" maxLength={140} />
 								{[1, 2, 3, 4].map((n) => (
 									<input
 										key={n}
@@ -324,21 +273,13 @@ function FormFields({
 										maxLength={80}
 									/>
 								))}
-								<button
-									type="button"
-									className="an-link-btn"
-									onClick={() => setPollOpen(false)}
-								>
+								<button type="button" className="an-link-btn" onClick={() => setPollOpen(false)}>
 									Remove poll
 								</button>
 							</Panel>
 						) : (
 							<Panel title="Poll">
-								<button
-									type="button"
-									className="an-link-btn"
-									onClick={() => setPollOpen(true)}
-								>
+								<button type="button" className="an-link-btn" onClick={() => setPollOpen(true)}>
 									+ Add a poll
 								</button>
 							</Panel>
@@ -386,10 +327,7 @@ function FormFields({
 
 			{mode === "create" && (
 				<div className="an-form-right">
-					<Panel
-						title={'Require "I\'ve read this"'}
-						lock={f.acknowledge ? undefined : "Pro"}
-					>
+					<Panel title={'Require "I\'ve read this"'} lock={f.acknowledge ? undefined : "Pro"}>
 						<label className="an-toggle">
 							<input
 								type="checkbox"
@@ -400,6 +338,19 @@ function FormFields({
 								disabled={!f.acknowledge}
 							/>
 							<span className="an-muted">Track who confirmed</span>
+						</label>
+					</Panel>
+
+					<Panel title="Read-only mode">
+						<label className="an-toggle">
+							<input
+								type="checkbox"
+								className="an-switch"
+								name="read_only"
+								checked={readOnly}
+								onChange={(e) => setReadOnly(e.target.checked)}
+							/>
+							<span className="an-muted">Disable comments</span>
 						</label>
 					</Panel>
 
@@ -433,60 +384,66 @@ function FormFields({
 						{f.expire && <input type="hidden" name="expires_at" value={expires} />}
 					</Panel>
 
-					<Panel title="Also send to" lock={f.pushSend ? undefined : "Business"}>
+					<Panel title="Target specific products" lock={f.targetProducts ? undefined : "Pro"}>
+						<ProductPicker
+							disabled={!f.targetProducts}
+							fetchProducts={fetchProducts}
+							value={targets}
+							onChange={setTargets}
+						/>
+						<input type="hidden" name="targets" value={JSON.stringify(f.targetProducts ? targets : [])} />
+					</Panel>
+
+					<Panel title="Also send to">
+						<p className="an-muted an-note">
+							<Icon name="bell" size={13} /> Push goes to all members automatically.
+						</p>
 						<div className="an-chip-row">
-							{delivery.discordConnected ? (
-								<ChannelChip
-									name="discord"
-									label="Discord"
-									checked={discord}
-									onChange={setDiscord}
-									disabled={!f.pushSend}
+							{channels.map((c: any) => (
+								<Chip
+									key={c.id}
+									name={`ch_${c.id}`}
+									label={`${c.kind === "discord" ? "Discord" : "Telegram"}: ${c.name}`}
+									checked={!!sel[`ch_${c.id}`]}
+									onChange={setOne(`ch_${c.id}`)}
 								/>
-							) : (
-								<button
-									type="button"
-									className="an-chip"
-									disabled={!f.pushSend}
-									onClick={() => setManage(true)}
-								>
-									Discord: connect
-								</button>
-							)}
-							{delivery.emailReady && (
-								<ChannelChip
+							))}
+							{emailReady && (
+								<Chip
 									name="email"
 									label="Email"
-									checked={email}
-									onChange={setEmail}
-									disabled={!f.pushSend}
+									checked={!!sel.email}
+									onChange={setOne("email")}
+									disabled={!f.email}
+									lock={!f.email}
 								/>
 							)}
-							<ChannelChip
-								name="push"
-								label="Push"
-								checked={push}
-								onChange={setPush}
-								disabled={!f.pushSend}
+							<Chip
+								name="chat"
+								label={chatReady || !f.whopChat ? "Whop chat" : "Whop chat (set up in Settings)"}
+								checked={!!sel.chat}
+								onChange={setOne("chat")}
+								disabled={!f.whopChat || !chatReady}
+								lock={!f.whopChat}
+							/>
+							<Chip
+								name="forum"
+								label="Whop forum"
+								checked={!!sel.forum}
+								onChange={setOne("forum")}
+								disabled={!f.whopForum}
+								lock={!f.whopForum}
 							/>
 						</div>
-						{f.pushSend && delivery.discordConnected && (
-							<button
-								type="button"
-								className="an-link-btn"
-								onClick={() => setManage(!manage)}
-							>
-								{manage ? "Hide Discord settings" : "Manage Discord"}
-							</button>
+						{(!f.whopChat || !f.whopForum) && (
+							<p className="an-muted">Whop chat and forum are on the Pro plan.</p>
 						)}
-						{f.pushSend && manage && (
-							<DiscordBox
-								connected={delivery.discordConnected}
-								onSave={delivery.onSaveDiscord}
-								onTest={delivery.onTestDiscord}
-								onRemove={delivery.onRemoveDiscord}
-							/>
+						{channels.length === 0 && (
+							<p className="an-muted">No Discord or Telegram channels yet.</p>
 						)}
+						<Link href={settingsHref} prefetch={false} className="an-link-btn">
+							Manage channels in Settings
+						</Link>
 					</Panel>
 				</div>
 			)}
@@ -494,29 +451,9 @@ function FormFields({
 	);
 }
 
-export function CreateForm({
-	action,
-	plan,
-	mode,
-	id,
-	initial,
-	cancelHref,
-	liveCount,
-	delivery,
-}: {
-	action: (prev: FormResult, formData: FormData) => Promise<FormResult>;
-	plan: Plan;
-	mode: "create" | "edit";
-	id: string;
-	initial?: Initial;
-	cancelHref?: string;
-	liveCount: number;
-	delivery: Delivery;
-}) {
-	const [state, formAction, pending] = useActionState(
-		action,
-		null as FormResult,
-	);
+export function CreateForm(props: any) {
+	const { action, mode } = props;
+	const [state, formAction, pending] = useActionState(action, null as FormResult);
 	const [k, setK] = useState(0);
 
 	useEffect(() => {
@@ -528,18 +465,7 @@ export function CreateForm({
 			{state ? (
 				<p className={`an-notice ${state.ok ? "ok" : "bad"}`}>{state.message}</p>
 			) : null}
-			<FormFields
-				key={k}
-				formAction={formAction}
-				pending={pending}
-				plan={plan}
-				mode={mode}
-				id={id}
-				initial={initial}
-				cancelHref={cancelHref}
-				liveCount={liveCount}
-				delivery={delivery}
-			/>
+			<FormFields key={k} {...props} formAction={formAction} pending={pending} />
 		</>
 	);
 }

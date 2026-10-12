@@ -11,7 +11,7 @@ export async function cached<T>(
 	if (hit && hit.expires > Date.now()) return hit.value;
 	const value = await load();
 	store.set(key, { value, expires: Date.now() + ttlMs });
-	if (store.size > 500) {
+	if (store.size > 800) {
 		const oldest = store.keys().next().value;
 		if (oldest !== undefined) store.delete(oldest);
 	}
@@ -20,4 +20,12 @@ export async function cached<T>(
 
 export function forget(key: string) {
 	store.delete(key);
+}
+
+// True the first time inside the time window, false after that.
+export function claim(key: string, ms: number): boolean {
+	const hit = store.get(key);
+	if (hit && hit.expires > Date.now()) return false;
+	store.set(key, { value: true, expires: Date.now() + ms });
+	return true;
 }

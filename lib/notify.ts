@@ -4,6 +4,7 @@ export async function notifyExperience(opts: {
 	experienceId: string;
 	title: string;
 	content: string;
+	userIds?: string[];
 }): Promise<NotifyResult> {
 	const apiKey = process.env.WHOP_API_KEY;
 	if (!apiKey) return { ok: false, detail: "WHOP_API_KEY is missing on the server." };
@@ -16,14 +17,20 @@ export async function notifyExperience(opts: {
 			},
 			body: JSON.stringify({
 				experience_id: opts.experienceId,
-				title: opts.title,
-				content: opts.content,
+				title: opts.title.slice(0, 100),
+				content: opts.content.slice(0, 200),
+				...(opts.userIds && opts.userIds.length > 0
+					? { user_ids: opts.userIds }
+					: {}),
 			}),
 			signal: AbortSignal.timeout(8000),
 		});
 		const text = await res.text();
 		if (res.ok) return { ok: true, detail: "" };
-		return { ok: false, detail: `Whop answered ${res.status}: ${text.slice(0, 200)}` };
+		return {
+			ok: false,
+			detail: `Whop answered ${res.status}: ${text.slice(0, 200)}`,
+		};
 	} catch (e) {
 		return {
 			ok: false,

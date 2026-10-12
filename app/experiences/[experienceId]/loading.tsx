@@ -2,14 +2,11 @@ import "./announcements.css";
 
 export default function Loading() {
 	return (
-		<div className="an-root" data-theme="dark">
+		<div className="an-root" data-theme="system">
 			<div className="an-shell">
 				<aside className="an-side">
 					<div className="an-brand">
-						<span
-							className="an-sk"
-							style={{ width: 40, height: 40, borderRadius: 999 }}
-						/>
+						<span className="an-sk" style={{ width: 40, height: 40, borderRadius: 999 }} />
 						<div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
 							<span className="an-sk h16 w80" />
 							<span className="an-sk h16 w50" />

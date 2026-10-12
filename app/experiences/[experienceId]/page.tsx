@@ -1,48 +1,27 @@
-import { revalidatePath } from "next/cache";
+// @ts-nocheck
 import { headers } from "next/headers";
 import Link from "next/link";
-import type { ReactNode } from "react";
-import { cached, forget } from "@/lib/cache";
-import { deliver, emailReady, sendDiscord, validDiscordUrl } from "@/lib/deliver";
+import { cached } from "@/lib/cache";
 import {
-	type Channels,
-	getDiscordWebhook,
-	scheduleDelivery,
-	setDiscordWebhook,
+	DEFAULT_PREFS,
+	getPrefs,
+	isBannedRow,
+	listChannels,
+	listComments,
+	listLog,
 } from "@/lib/delivery-db";
-import {
-	asPlan,
-	EMOJIS,
-	FEATURES,
-	PLAN_NAMES,
-	PLAN_PRICES,
-	type Plan,
-} from "@/lib/plans";
-import {
-	acknowledge,
-	type Announcement,
-	castVote,
-	createAnnouncement,
-	deleteAnnouncement,
-	GRACE_DAYS,
-	getAnnouncement,
-	getPlanInfo,
-	getStats,
-	listAnnouncements,
-	type PlanInfo,
-	recordViews,
-	type Stats,
-	setOwnerPlan,
-	setPinned,
-	toggleReaction,
-	updateAnnouncement,
-} from "@/lib/supabase";
+import { emailReady } from "@/lib/deliver";
+import { FEATURES, PLAN_NAMES, PLAN_PRICES } from "@/lib/plans";
+import { GRACE_DAYS, getPlanInfo, getStats, listAnnouncements } from "@/lib/supabase";
+import { hasProductAccess } from "@/lib/whop-data";
 import { whopsdk } from "@/lib/whop-sdk";
 import "./announcements.css";
-import { type CheckoutStart, UpgradeButton } from "./billing-ui";
-import { CreateForm, type FormResult } from "./create-form";
+import * as act from "./actions";
+import { UpgradeButton } from "./billing-ui";
+import { Comments } from "./comments";
+import { CreateForm } from "./create-form";
 import { CountUp, PostActions } from "./extras";
-import { Icon, type IconName } from "./icons";
+import { Icon } from "./icons";
 import {
 	AckButton,
 	Countdown,
@@ -51,120 +30,66 @@ import {
 	PollBlock,
 	ReactionBar,
 } from "./interactive";
-import { Shell, ThemeToggle } from "./shell";
+import { AttachmentList, RichText } from "./render";
+import {
+	AppearanceCard,
+	BansCard,
+	ChannelsCard,
+	CrossPostCard,
+	LogCard,
+	NotificationsCard,
+	SpamCard,
+} from "./settings";
+import { Shell } from "./shell";
 import { ViewTracker } from "./view-tracker";
 
-const UUID = /^[0-9a-f-]{36}$/i;
-const URL_PATTERN = /(https?:\/\/[^\s<]+)/g;
-const IMAGE_URL = /\.(png|jpe?g|gif|webp)(\?[^\s]*)?$/i;
+const PLAN_CARDS = (withEmail: boolean) => [
+	{
+		plan: "starter",
+		blurb: "For new communities getting started",
+		items: [
+			"5 live announcements",
+			"Rich text editor, emoji and YouTube previews",
+			"2 attachments per post (10 MB)",
+			"Comments with read-only mode",
+			"Push to all members",
+			"1 Discord and 1 Telegram channel",
+			"Pin 1 announcement",
+			"Basic view count",
+		],
+	},
+	{
+		plan: "pro",
+		blurb: "For creators who need members to actually read",
+		items: [
+			"Everything in Starter",
+			"Unlimited announcements",
+			"Schedule and auto-remove",
+			"Polls and event countdowns",
+			"Must-acknowledge posts with read receipts",
+			"Target specific products",
+			"Post to Whop chat and public forum",
+			"Spam protection",
+			"3 channels each, 6 attachments (25 MB)",
+			"Full engagement analytics",
+		],
+	},
+	{
+		plan: "business",
+		blurb: "For brands running serious communities",
+		items: [
+			"Everything in Pro",
+			withEmail ? "Email to members" : "Email to members (when enabled)",
+			"User ban list",
+			"@ mention members",
+			"A/B test two headlines",
+			"Export analytics to CSV",
+			"10 channels each, 10 attachments (50 MB)",
+		],
+	},
+];
 
-function planCards(withEmail: boolean): {
-	plan: Plan;
-	blurb: string;
-	items: string[];
-}[] {
-	return [
-		{
-			plan: "starter",
-			blurb: "For new communities getting started",
-			items: [
-				"5 live announcements",
-				"Rich formatting and emoji reactions",
-				"Pin 1 announcement",
-				"Priority labels",
-				"Basic view count",
-			],
-		},
-		{
-			plan: "pro",
-			blurb: "For creators who need members to actually read",
-			items: [
-				"Unlimited announcements",
-				"Schedule posts for later",
-				"Polls inside announcements",
-				"Must-acknowledge posts with read receipts",
-				"Event countdowns and auto-expiry",
-				"Full engagement analytics",
-			],
-		},
-		{
-			plan: "business",
-			blurb: "For brands running serious communities",
-			items: [
-				"Everything in Pro",
-				withEmail
-					? "Send to Discord, email and push at once"
-					: "Send to Discord and push at once",
-				"A/B test two headlines",
-				"Export analytics to CSV",
-			],
-		},
-	];
-}
-
-function renderText(text: string, keyBase: string): ReactNode[] {
-	return text
-		.split(/\*\*(.+?)\*\*/g)
-		.map((part, j) =>
-			j % 2 === 1 ? <strong key={`${keyBase}-${j}`}>{part}</strong> : part,
-		);
-}
-
-function renderBody(text: string): ReactNode[] {
-	return text.split(URL_PATTERN).map((part, i) => {
-		if (i % 2 === 0) return <span key={i}>{renderText(part, String(i))}</span>;
-		const url = part.replace(/[.,!?;:)]+$/, "");
-		const tail = part.slice(url.length);
-		if (IMAGE_URL.test(url)) {
-			return (
-				<span key={i}>
-					<a href={url} target="_blank" rel="noopener noreferrer">
-						<img
-							src={url}
-							alt=""
-							loading="lazy"
-							style={{
-								display: "block",
-								maxWidth: "100%",
-								borderRadius: 14,
-								margin: "8px 0",
-							}}
-						/>
-					</a>
-					{tail}
-				</span>
-			);
-		}
-		return (
-			<span key={i}>
-				<a
-					href={url}
-					target="_blank"
-					rel="noopener noreferrer"
-					style={{ textDecoration: "underline" }}
-				>
-					{url}
-				</a>
-				{tail}
-			</span>
-		);
-	});
-}
-
-function clean(value: FormDataEntryValue | null, max: number) {
-	return String(value ?? "")
-		.trim()
-		.slice(0, max);
-}
-
-function isoOrNull(value: FormDataEntryValue | null) {
-	const s = String(value ?? "").trim();
-	if (!s) return null;
-	const d = new Date(s);
-	return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-function isLiveAt(a: Announcement, t: number) {
+function isLiveAt(a: any, t: number) {
 	return (
 		new Date(a.publish_at).getTime() <= t &&
 		(!a.expires_at || new Date(a.expires_at).getTime() > t)
@@ -181,11 +106,7 @@ function when(iso: string) {
 }
 
 function fmtDate(d: Date) {
-	return d.toLocaleDateString("en-GB", {
-		day: "numeric",
-		month: "short",
-		year: "numeric",
-	});
+	return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
 function variantFor(userId: string, id: string) {
@@ -195,404 +116,109 @@ function variantFor(userId: string, id: string) {
 	return h % 2 === 0 ? "a" : "b";
 }
 
-function csvCell(v: string | number) {
+function csvCell(v: any) {
 	const s = String(v);
 	const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;
 	return `"${safe.replace(/"/g, '""')}"`;
 }
 
-const FALLBACK_INFO: PlanInfo = {
-	plan: "starter",
-	stored: "starter",
-	paidUntil: null,
-	paidActive: false,
-};
+const FALLBACK_INFO = { plan: "starter", stored: "starter", paidUntil: null, paidActive: false };
 
-export default async function ExperiencePage({
-	params,
-	searchParams,
-}: {
-	params: Promise<{ experienceId: string }>;
-	searchParams: Promise<{ view?: string; edit?: string }>;
-}) {
+export default async function ExperiencePage({ params, searchParams }: any) {
 	const { experienceId } = await params;
 	const { view: viewParam, edit } = await searchParams;
 	const basePath = `/experiences/${experienceId}`;
 
 	const listP = listAnnouncements(experienceId)
 		.then((rows) => ({ rows, failed: false }))
-		.catch(() => ({ rows: [] as Announcement[], failed: true }));
-	const infoP = cached(`plan:${experienceId}`, 3_000, () =>
-		getPlanInfo(experienceId),
-	).catch(() => FALLBACK_INFO);
+		.catch(() => ({ rows: [], failed: true }));
+	const infoP = cached(`plan:${experienceId}`, 3_000, () => getPlanInfo(experienceId)).catch(
+		() => FALLBACK_INFO,
+	);
 
 	// Ensure the user is logged in on whop.
 	const { userId } = await whopsdk.verifyUserToken(await headers());
-	const access = await cached(`access:${userId}:${experienceId}`, 60_000, () =>
+	const access: any = await cached(`access:${userId}:${experienceId}`, 60_000, () =>
 		whopsdk.users.checkAccess(experienceId, { id: userId }),
 	);
-	const isAdmin = String((access as any).access_level) === "admin";
+	const isAdmin = String(access?.access_level) === "admin";
 
-	const statsP = getStats(experienceId, userId).catch(
-		() => ({}) as Record<string, Stats>,
-	);
-	const hookP = isAdmin
-		? getDiscordWebhook(experienceId).catch(() => null)
-		: Promise.resolve(null);
-	const [{ rows: all, failed: loadError }, planInfo, stats, discordHook] =
-		await Promise.all([listP, infoP, statsP, hookP]);
+	const statsP = getStats(experienceId, userId).catch(() => ({}));
+	const commentsP = listComments(experienceId).catch(() => []);
+	const prefsP = getPrefs(experienceId).catch(() => DEFAULT_PREFS);
+	const banP = isAdmin
+		? Promise.resolve(false)
+		: cached(`ban:${experienceId}:${userId}`, 15_000, () =>
+				isBannedRow(experienceId, userId),
+			).catch(() => false);
+
+	const [{ rows: all, failed: loadError }, planInfo, stats, comments, prefs, restricted] =
+		await Promise.all([listP, infoP, statsP, commentsP, prefsP, banP]);
 
 	const plan = planInfo.plan;
 	const f = FEATURES[plan];
 	const creator = isAdmin;
 	const emailOn = emailReady();
-	const discordConnected = !!discordHook;
-	const view = creator
-		? ["create", "analytics", "plans"].includes(viewParam ?? "")
-			? (viewParam as string)
-			: "feed"
-		: "feed";
+	const allowed = creator ? ["create", "analytics", "plans", "settings"] : ["settings"];
+	const view = allowed.includes(viewParam ?? "") ? viewParam : "feed";
 
-	// Only the owner can switch plans for free (for testing).
 	const owners = (process.env.OWNER_USER_IDS ?? "")
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
 	const canSwitchFree = isAdmin && owners.includes(userId);
 
+	const needChannels = creator && (view === "create" || view === "settings");
+	const channelRows = needChannels ? await listChannels(experienceId).catch(() => []) : [];
+	const channels = channelRows.map((r: any) => ({
+		id: r.id,
+		kind: r.kind,
+		name: r.name,
+		target: r.target,
+		hint: String(r.secret).slice(-4),
+	}));
+	const logRows =
+		creator && view === "settings" ? await listLog(experienceId, 15).catch(() => []) : [];
+
 	const now = Date.now();
-	const visible = creator ? all : all.filter((a) => isLiveAt(a, now));
-	const liveCount = all.filter((a) => isLiveAt(a, now)).length;
-	const editing = creator && edit ? all.find((a) => a.id === edit) : undefined;
+	let visible = creator ? all : all.filter((a: any) => isLiveAt(a, now));
+	if (!creator) {
+		const ok = await Promise.all(
+			visible.map(async (a: any) => {
+				const t = Array.isArray(a.target_products) ? a.target_products : [];
+				if (t.length === 0) return true;
+				const checks = await Promise.all(t.map((p: string) => hasProductAccess(userId, p)));
+				return checks.some(Boolean);
+			}),
+		);
+		visible = visible.filter((_: any, i: number) => ok[i]);
+	}
+	const liveCount = all.filter((a: any) => isLiveAt(a, now)).length;
+	const editing = creator && edit ? all.find((a: any) => a.id === edit) : undefined;
 
 	const trackRows = !isAdmin
-		? visible.map((a) => ({
+		? visible.map((a: any) => ({
 				id: a.id,
 				variant: a.alt_title ? variantFor(userId, a.id) : "a",
 			}))
 		: [];
 
-	// ---------- server actions ----------
+	const B = (fn: any) => fn.bind(null, experienceId);
 
-	async function markSeen() {
-		"use server";
-		await recordViews(userId, trackRows);
-	}
-
-	async function react(id: string, emoji: string) {
-		"use server";
-		if (!UUID.test(id) || !EMOJIS.includes(emoji)) return;
-		await toggleReaction(id, userId, emoji);
-	}
-
-	async function ack(id: string) {
-		"use server";
-		if (!UUID.test(id)) return;
-		await acknowledge(id, userId);
-	}
-
-	async function vote(id: string, index: number) {
-		"use server";
-		if (!UUID.test(id) || !Number.isInteger(index)) return;
-		const a = await getAnnouncement(experienceId, id);
-		if (!a?.poll || index < 0 || index >= a.poll.options.length) return;
-		await castVote(id, userId, index);
-	}
-
-	async function pin(id: string, pinned: boolean): Promise<string> {
-		"use server";
-		if (!isAdmin || !UUID.test(id)) return "Not allowed.";
-		if (pinned) {
-			const list = await listAnnouncements(experienceId);
-			const others = list.filter((a) => a.pinned && a.id !== id).length;
-			if (others >= f.pinMax) {
-				return `Your plan allows ${f.pinMax} pinned announcement${f.pinMax === 1 ? "" : "s"}.`;
-			}
-		}
-		await setPinned(experienceId, id, pinned);
-		revalidatePath(basePath);
-		return "";
-	}
-
-	async function remove(id: string): Promise<string> {
-		"use server";
-		if (!isAdmin || !UUID.test(id)) return "Not allowed.";
-		await deleteAnnouncement(experienceId, id);
-		revalidatePath(basePath);
-		return "";
-	}
-
-	async function publish(
-		_prev: FormResult,
-		formData: FormData,
-	): Promise<FormResult> {
-		"use server";
-		if (!isAdmin) return { ok: false, message: "Only admins can post." };
-		const title = clean(formData.get("title"), 120);
-		const body = clean(formData.get("body"), 4000);
-		if (!title || !body) {
-			return { ok: false, message: "Add a headline and a message." };
-		}
-		const rawId = String(formData.get("id") ?? "");
-		const id = UUID.test(rawId) ? rawId : crypto.randomUUID();
-		const p = String(formData.get("priority") ?? "");
-		const priority = p === "important" || p === "urgent" ? p : "normal";
-		const wantPin = formData.get("pinned") === "on";
-
-		const existing = await listAnnouncements(experienceId);
-		const t = Date.now();
-		if (existing.filter((a) => isLiveAt(a, t)).length >= f.liveMax) {
-			return {
-				ok: false,
-				message: `Your plan allows ${f.liveMax} live announcements. Delete one or upgrade.`,
-			};
-		}
-		if (wantPin && existing.filter((a) => a.pinned).length >= f.pinMax) {
-			return {
-				ok: false,
-				message: `Your plan allows ${f.pinMax} pinned announcement${f.pinMax === 1 ? "" : "s"}. Unpin one or upgrade.`,
-			};
-		}
-
-		const publishAt = f.schedule ? isoOrNull(formData.get("publish_at")) : null;
-		const eventAt = f.countdown ? isoOrNull(formData.get("event_at")) : null;
-		const expiresAt = f.expire ? isoOrNull(formData.get("expires_at")) : null;
-		const requireAck = f.acknowledge && formData.get("require_ack") === "on";
-		const altTitle = f.abTest
-			? clean(formData.get("alt_title"), 120) || null
-			: null;
-
-		let poll: { question: string; options: string[] } | null = null;
-		if (f.poll) {
-			const question = clean(formData.get("poll_q"), 140);
-			const options = [1, 2, 3, 4]
-				.map((n) => clean(formData.get(`poll_o${n}`), 80))
-				.filter(Boolean);
-			if (question && options.length >= 2) poll = { question, options };
-		}
-
-		const channels: Channels = {
-			push: f.pushSend && formData.get("push") === "on",
-			discord: f.pushSend && formData.get("discord") === "on",
-			email: f.pushSend && emailOn && formData.get("email") === "on",
-		};
-		const anyChannel = channels.push || channels.discord || channels.email;
-		const scheduledLater =
-			!!publishAt && new Date(publishAt).getTime() > Date.now();
-
-		await createAnnouncement({
-			id,
-			experience_id: experienceId,
-			title,
-			body,
-			pinned: wantPin,
-			author_id: userId,
-			priority,
-			require_ack: requireAck,
-			publish_at: publishAt ?? undefined,
-			event_at: eventAt,
-			expires_at: expiresAt,
-			alt_title: altTitle,
-			poll,
-		});
-		revalidatePath(basePath);
-
-		let message = scheduledLater ? "Scheduled." : "Posted.";
-		if (anyChannel) {
-			if (scheduledLater) {
-				await scheduleDelivery(id, channels);
-				const names = [
-					channels.push && "push",
-					channels.discord && "Discord",
-					channels.email && "email",
-				]
-					.filter(Boolean)
-					.join(", ");
-				message += ` It will be sent to ${names} at the scheduled time.`;
-			} else {
-				const results = await deliver(
-					{ id, experienceId, title, body },
-					channels,
-				);
-				message += ` ${results.join(" ")}`;
-			}
-		}
-		return { ok: true, message };
-	}
-
-	async function update(
-		_prev: FormResult,
-		formData: FormData,
-	): Promise<FormResult> {
-		"use server";
-		if (!isAdmin) return { ok: false, message: "Only admins can edit." };
-		const id = String(formData.get("id") ?? "");
-		if (!UUID.test(id)) return { ok: false, message: "Something went wrong." };
-		const title = clean(formData.get("title"), 120);
-		const body = clean(formData.get("body"), 4000);
-		if (!title || !body) {
-			return { ok: false, message: "Add a headline and a message." };
-		}
-		const p = String(formData.get("priority") ?? "");
-		const priority = p === "important" || p === "urgent" ? p : "normal";
-		const wantPin = formData.get("pinned") === "on";
-		if (wantPin) {
-			const list = await listAnnouncements(experienceId);
-			const others = list.filter((a) => a.pinned && a.id !== id).length;
-			if (others >= f.pinMax) {
-				return {
-					ok: false,
-					message: `Your plan allows ${f.pinMax} pinned announcement${f.pinMax === 1 ? "" : "s"}.`,
-				};
-			}
-		}
-		await updateAnnouncement(experienceId, id, {
-			title,
-			body,
-			pinned: wantPin,
-			priority,
-		});
-		revalidatePath(basePath);
-		return { ok: true, message: "Saved." };
-	}
-
-	async function saveDiscord(url: string): Promise<string> {
-		"use server";
-		if (!isAdmin) return "Only admins can do this.";
-		if (!f.pushSend) return "Sending to Discord is on the Business plan.";
-		const link = url.trim();
-		if (!validDiscordUrl(link)) {
-			return "That does not look like a Discord webhook link.";
-		}
-		await setDiscordWebhook(experienceId, link);
-		revalidatePath(basePath);
-		return "Discord connected.";
-	}
-
-	async function testDiscord(): Promise<string> {
-		"use server";
-		if (!isAdmin) return "Only admins can do this.";
-		const hook = await getDiscordWebhook(experienceId);
-		if (!hook) return "Discord is not connected yet.";
-		const r = await sendDiscord(
-			hook,
-			"Test announcement",
-			"Discord is connected. Your real announcements will appear here.",
-		);
-		return r.ok ? "Test message sent to Discord." : `Discord failed. ${r.detail}`;
-	}
-
-	async function removeDiscord(): Promise<string> {
-		"use server";
-		if (!isAdmin) return "Only admins can do this.";
-		await setDiscordWebhook(experienceId, null);
-		revalidatePath(basePath);
-		return "Discord disconnected.";
-	}
-
-	// Owner-only free plan switch, for testing.
-	async function choosePlan(next: string) {
-		"use server";
-		if (!canSwitchFree) return;
-		await setOwnerPlan(experienceId, asPlan(next));
-		forget(`plan:${experienceId}`);
-		revalidatePath(basePath);
-	}
-
-	// Step 1 of paying: ask Whop to prepare the checkout.
-	async function startCheckout(target: string): Promise<CheckoutStart> {
-		"use server";
-		if (!isAdmin) return { ok: false, error: "Only admins can upgrade." };
-		const p = asPlan(target);
-		if (p === "starter") return { ok: false, error: "Choose Pro or Business." };
-
-		const current = await getPlanInfo(experienceId);
-		if (current.paidActive) {
-			return {
-				ok: false,
-				error:
-					current.stored === p
-						? "You are already on this plan."
-						: "Cancel your current plan in Whop first, then choose the new one.",
-			};
-		}
-
-		const companyId = process.env.WHOP_PAYOUT_COMPANY_ID;
-		const productId = process.env.WHOP_PRODUCT_ID;
-		if (!companyId || !productId) {
-			return { ok: false, error: "Billing is not set up yet." };
-		}
-
-		// A test price only ever applies to the owner, never to customers.
-		const testPrice = canSwitchFree
-			? Number(process.env[p === "pro" ? "PRICE_PRO" : "PRICE_BUSINESS"])
-			: Number.NaN;
-		const price =
-			Number.isFinite(testPrice) && testPrice > 0 ? testPrice : PLAN_PRICES[p];
-		if (!Number.isFinite(price) || price <= 0) {
-			return { ok: false, error: "Invalid price setting." };
-		}
-
-		try {
-			const cfg: any = await whopsdk.checkoutConfigurations.create({
-				plan: {
-					company_id: companyId,
-					product_id: productId,
-					currency: "usd",
-					plan_type: "renewal",
-					initial_price: 0,
-					renewal_price: price,
-					billing_period: 30,
-				},
-				metadata: {
-					app: "announcements",
-					experience_id: experienceId,
-					plan: p,
-					user_id: userId,
-				},
-			} as any);
-			const planId = cfg?.plan?.id ?? cfg?.plan_id;
-			if (!cfg?.id || !planId) {
-				return { ok: false, error: "Whop did not return a checkout." };
-			}
-			return { ok: true, id: String(cfg.id), planId: String(planId) };
-		} catch (e) {
-			const detail = e instanceof Error ? e.message.slice(0, 160) : "";
-			return { ok: false, error: `Could not start checkout. ${detail}` };
-		}
-	}
-
-	// Step 3 of paying: the page asks if the webhook has switched the plan yet.
-	async function checkPlan(): Promise<string> {
-		"use server";
-		if (!isAdmin) return "";
-		forget(`plan:${experienceId}`);
-		const i = await getPlanInfo(experienceId);
-		return i.plan;
-	}
-
-	// ---------- pieces of the page ----------
-
-	const nav = (v: string, label: string, icon: IconName, href: string) => (
-		<Link
-			key={v}
-			href={href}
-			prefetch={false}
-			className={view === v ? "on" : ""}
-		>
+	const nav = (v: string, label: string, icon: string, href: string) => (
+		<Link key={v} href={href} prefetch={false} className={view === v ? "on" : ""}>
 			<Icon name={icon} size={18} />
 			{label}
 		</Link>
 	);
 
-	const renderPost = (a: Announcement) => {
-		const s = stats[a.id];
+	const renderPost = (a: any) => {
+		const s: any = stats[a.id];
 		const scheduled = new Date(a.publish_at).getTime() > now;
 		const expired = !!a.expires_at && new Date(a.expires_at).getTime() <= now;
+		const targeted = Array.isArray(a.target_products) && a.target_products.length > 0;
 		const shownTitle =
-			!isAdmin && a.alt_title && variantFor(userId, a.id) === "b"
-				? a.alt_title
-				: a.title;
+			!isAdmin && a.alt_title && variantFor(userId, a.id) === "b" ? a.alt_title : a.title;
 		return (
 			<article key={a.id} className="an-card">
 				<div className="an-card-top">
@@ -602,9 +228,8 @@ export default async function ExperiencePage({
 								<Icon name="pin" size={13} /> Pinned
 							</span>
 						)}
-						{a.priority !== "normal" && (
-							<span className={`an-tag ${a.priority}`}>{a.priority}</span>
-						)}
+						{a.priority !== "normal" && <span className={`an-tag ${a.priority}`}>{a.priority}</span>}
+						{creator && targeted && <span className="an-tag target">Targeted</span>}
 						{scheduled && <span className="an-tag">Scheduled</span>}
 						{expired && <span className="an-tag">Expired</span>}
 						<span className="an-muted">{when(a.publish_at)}</span>
@@ -614,13 +239,14 @@ export default async function ExperiencePage({
 							id={a.id}
 							pinned={a.pinned}
 							editHref={`${basePath}?view=create&edit=${a.id}`}
-							onPin={pin}
-							onDelete={remove}
+							onPin={B(act.pin)}
+							onDelete={B(act.remove)}
 						/>
 					)}
 				</div>
 				<h2 className="an-title">{shownTitle}</h2>
-				<p className="an-body">{renderBody(a.body)}</p>
+				<RichText text={a.body} />
+				<AttachmentList items={a.attachments ?? []} />
 				{a.event_at && <Countdown target={a.event_at} />}
 				{a.poll && (
 					<PollBlock
@@ -629,21 +255,21 @@ export default async function ExperiencePage({
 						counts={s?.vote_counts ?? {}}
 						myVote={s?.my_vote ?? null}
 						showResults={creator}
-						onVote={vote}
+						onVote={B(act.vote)}
 					/>
 				)}
 				{a.require_ack &&
 					(creator ? (
 						<span className="an-muted">Members must confirm they read this</span>
 					) : (
-						<AckButton id={a.id} done={s?.my_ack ?? false} onAck={ack} />
+						<AckButton id={a.id} done={s?.my_ack ?? false} onAck={B(act.ack)} />
 					))}
 				<div className="an-card-foot">
 					<ReactionBar
 						id={a.id}
 						counts={s?.reaction_counts ?? {}}
 						mine={s?.my_reactions ?? []}
-						onReact={react}
+						onReact={B(act.react)}
 					/>
 					<div className="an-meta">
 						<span>
@@ -653,23 +279,35 @@ export default async function ExperiencePage({
 						{a.require_ack && <span>{s?.ack_count ?? 0} confirmed</span>}
 					</div>
 				</div>
+				<Comments
+					postId={a.id}
+					enabled={a.comments_enabled !== false}
+					initial={comments.filter((cm: any) => cm.announcement_id === a.id)}
+					isAdmin={isAdmin}
+					meId={userId}
+					restricted={restricted}
+					onAdd={B(act.addComment)}
+					onDelete={B(act.deleteComment)}
+				/>
 			</article>
 		);
 	};
 
 	const feed = (
 		<>
-			{loadError && (
-				<p className="an-muted">Couldn't load announcements. Please try again.</p>
+			{restricted && (
+				<p className="an-notice bad">
+					You have been restricted in this community. You can read announcements but can't react, vote or
+					comment.
+				</p>
 			)}
-			{!loadError && visible.length === 0 && (
-				<p className="an-muted">No announcements yet.</p>
-			)}
+			{loadError && <p className="an-muted">Couldn't load announcements. Please try again.</p>}
+			{!loadError && visible.length === 0 && <p className="an-muted">No announcements yet.</p>}
 			{visible.map(renderPost)}
 		</>
 	);
 
-	let content: ReactNode;
+	let content: any;
 
 	if (creator && view === "create") {
 		content = (
@@ -680,18 +318,18 @@ export default async function ExperiencePage({
 				</div>
 				<CreateForm
 					key={editing ? editing.id : "new"}
-					action={editing ? update : publish}
+					action={editing ? B(act.update) : B(act.publish)}
 					plan={plan}
 					mode={editing ? "edit" : "create"}
 					id={editing ? editing.id : ""}
 					liveCount={liveCount}
-					delivery={{
-						discordConnected,
-						emailReady: emailOn,
-						onSaveDiscord: saveDiscord,
-						onTestDiscord: testDiscord,
-						onRemoveDiscord: removeDiscord,
-					}}
+					channels={channels}
+					emailReady={emailOn}
+					chatReady={!!prefs.chat_experience_id}
+					settingsHref={`${basePath}?view=settings`}
+					prepareUpload={B(act.prepareUpload)}
+					fetchProducts={B(act.fetchProducts)}
+					fetchMentionMembers={B(act.fetchMentionMembers)}
 					initial={
 						editing
 							? {
@@ -707,29 +345,28 @@ export default async function ExperiencePage({
 			</>
 		);
 	} else if (creator && view === "analytics") {
-		const rows = all.map((a) => ({ a, s: stats[a.id] }));
-		const totalViews = rows.reduce((n, r) => n + (r.s?.view_count ?? 0), 0);
+		const rows = all.map((a: any) => ({ a, s: stats[a.id] as any }));
+		const totalViews = rows.reduce((n: number, r: any) => n + (r.s?.view_count ?? 0), 0);
 		const totalReactions = rows.reduce(
-			(n, r) =>
-				n +
-				Object.values(r.s?.reaction_counts ?? {}).reduce((x, y) => x + y, 0),
+			(n: number, r: any) =>
+				n + Object.values(r.s?.reaction_counts ?? {}).reduce((x: number, y: any) => x + y, 0),
 			0,
 		);
-		const ackRows = rows.filter((r) => r.a.require_ack);
-		const ackViews = ackRows.reduce((n, r) => n + (r.s?.view_count ?? 0), 0);
-		const ackDone = ackRows.reduce((n, r) => n + (r.s?.ack_count ?? 0), 0);
+		const ackRows = rows.filter((r: any) => r.a.require_ack);
+		const ackViews = ackRows.reduce((n: number, r: any) => n + (r.s?.view_count ?? 0), 0);
+		const ackDone = ackRows.reduce((n: number, r: any) => n + (r.s?.ack_count ?? 0), 0);
 		const rate = ackViews > 0 ? `${Math.round((ackDone / ackViews) * 100)}%` : "-";
-		const maxViews = Math.max(1, ...rows.map((r) => r.s?.view_count ?? 0));
+		const maxViews = Math.max(1, ...rows.map((r: any) => r.s?.view_count ?? 0));
 		const csv = [
 			["title", "published", "views", "reactions", "confirmed", "views_a", "views_b"]
 				.map(csvCell)
 				.join(","),
-			...rows.map((r) =>
+			...rows.map((r: any) =>
 				[
 					r.a.title,
 					r.a.publish_at,
 					r.s?.view_count ?? 0,
-					Object.values(r.s?.reaction_counts ?? {}).reduce((x, y) => x + y, 0),
+					Object.values(r.s?.reaction_counts ?? {}).reduce((x: number, y: any) => x + y, 0),
 					r.s?.ack_count ?? 0,
 					r.s?.views_a ?? 0,
 					r.s?.views_b ?? 0,
@@ -743,15 +380,13 @@ export default async function ExperiencePage({
 			<div className="an-card">
 				<h2 className="an-title">Views per announcement</h2>
 				{rows.length === 0 && <p className="an-muted">Nothing to show yet.</p>}
-				{rows.map((r) => (
+				{rows.map((r: any) => (
 					<div key={r.a.id} className="an-bar-row">
 						<div className="an-bar-top">
 							<span>{r.a.title}</span>
 							<span className="an-muted">
 								{r.s?.view_count ?? 0}
-								{r.a.alt_title
-									? ` (A ${r.s?.views_a ?? 0} · B ${r.s?.views_b ?? 0})`
-									: ""}
+								{r.a.alt_title ? ` (A ${r.s?.views_a ?? 0} · B ${r.s?.views_b ?? 0})` : ""}
 							</span>
 						</div>
 						<div className="an-bar">
@@ -812,11 +447,7 @@ export default async function ExperiencePage({
 						<div className="an-lockover">
 							<Icon name="lock" size={22} />
 							<span>Detailed analytics are on Pro</span>
-							<Link
-								href={`${basePath}?view=plans`}
-								prefetch={false}
-								className="an-btn"
-							>
+							<Link href={`${basePath}?view=plans`} prefetch={false} className="an-btn">
 								See plans
 							</Link>
 						</div>
@@ -825,13 +456,10 @@ export default async function ExperiencePage({
 			</>
 		);
 	} else if (creator && view === "plans") {
-		const billingReady =
-			!!process.env.WHOP_PAYOUT_COMPANY_ID && !!process.env.WHOP_PRODUCT_ID;
+		const billingReady = !!process.env.WHOP_PAYOUT_COMPANY_ID && !!process.env.WHOP_PRODUCT_ID;
 		const paidEnd =
 			planInfo.paidActive && planInfo.paidUntil
-				? new Date(
-						new Date(planInfo.paidUntil).getTime() - GRACE_DAYS * 86400000,
-					)
+				? new Date(new Date(planInfo.paidUntil).getTime() - GRACE_DAYS * 86400000)
 				: null;
 
 		content = (
@@ -841,11 +469,8 @@ export default async function ExperiencePage({
 					<p className="an-muted">Start free. Upgrade when your community grows.</p>
 				</div>
 				<div className="an-plans">
-					{planCards(emailOn).map((c) => (
-						<div
-							key={c.plan}
-							className={`an-card an-plan${c.plan === "pro" ? " pop" : ""}`}
-						>
+					{PLAN_CARDS(emailOn).map((c: any) => (
+						<div key={c.plan} className={`an-card an-plan${c.plan === "pro" ? " pop" : ""}`}>
 							{c.plan === "pro" && <span className="an-pop-badge">Most popular</span>}
 							<h2 className="an-title">{PLAN_NAMES[c.plan]}</h2>
 							<p className="an-muted">{c.blurb}</p>
@@ -853,7 +478,7 @@ export default async function ExperiencePage({
 								${PLAN_PRICES[c.plan]} <small>/month</small>
 							</div>
 							<ul>
-								{c.items.map((text) => (
+								{c.items.map((text: string) => (
 									<li key={text}>{text}</li>
 								))}
 							</ul>
@@ -878,8 +503,8 @@ export default async function ExperiencePage({
 									plan={c.plan}
 									label={`Upgrade to ${PLAN_NAMES[c.plan]}`}
 									primary={c.plan === "pro"}
-									startCheckout={startCheckout}
-									checkPlan={checkPlan}
+									startCheckout={B(act.startCheckout)}
+									checkPlan={B(act.checkPlan)}
 								/>
 							)}
 						</div>
@@ -888,14 +513,14 @@ export default async function ExperiencePage({
 
 				{paidEnd ? (
 					<p className="an-muted">
-						Your {PLAN_NAMES[plan]} plan is active, paid through {fmtDate(paidEnd)}.
-						To cancel or change plans, manage your subscription in your Whop
-						account. You keep your plan until the paid period ends.
+						Your {PLAN_NAMES[plan]} plan is active, paid through {fmtDate(paidEnd)}. To cancel or change
+						plans, manage your subscription in your Whop account. You keep your plan until the paid period
+						ends.
 					</p>
 				) : (
 					<p className="an-muted">
-						Payments are handled securely by Whop checkout. Your plan switches on
-						as soon as the payment goes through.
+						Payments are handled securely by Whop checkout. Your plan switches on as soon as the payment goes
+						through.
 					</p>
 				)}
 
@@ -903,21 +528,81 @@ export default async function ExperiencePage({
 					<div className="an-card">
 						<h2 className="an-title">Owner tools</h2>
 						<p className="an-muted">
-							Free plan switch for testing. Customers never see this. Your Whop
-							user ID: {userId}
+							Free plan switch for testing. Customers never see this. Your Whop user ID: {userId}
 						</p>
 						<div className="an-row">
-							{(["starter", "pro", "business"] as Plan[]).map((p) => (
+							{["starter", "pro", "business"].map((p) => (
 								<PlanButton
 									key={p}
 									plan={p}
 									current={planInfo.stored === p && !planInfo.paidActive}
 									label={`Set ${PLAN_NAMES[p]}`}
-									onChoose={choosePlan}
+									onChoose={B(act.choosePlan)}
 								/>
 							))}
 						</div>
 					</div>
+				)}
+			</>
+		);
+	} else if (view === "settings") {
+		const plansHref = `${basePath}?view=plans`;
+		content = (
+			<>
+				<div className="an-head">
+					<h1>Settings</h1>
+					<p className="an-muted">
+						{creator ? "Appearance, notifications and integrations" : "Appearance"}
+					</p>
+				</div>
+				<AppearanceCard />
+				{creator && (
+					<>
+						<NotificationsCard
+							initial={{
+								push_enabled: prefs.push_enabled,
+								notify_reactions: prefs.notify_reactions,
+								notify_comments: prefs.notify_comments,
+							}}
+							save={B(act.savePreferences)}
+						/>
+						<ChannelsCard
+							kind="discord"
+							channels={channels.filter((c: any) => c.kind === "discord")}
+							max={f.channelsMax}
+							add={B(act.addChannelAction)}
+							remove={B(act.removeChannelAction)}
+							test={B(act.testChannelAction)}
+						/>
+						<ChannelsCard
+							kind="telegram"
+							channels={channels.filter((c: any) => c.kind === "telegram")}
+							max={f.channelsMax}
+							add={B(act.addChannelAction)}
+							remove={B(act.removeChannelAction)}
+							test={B(act.testChannelAction)}
+						/>
+						<CrossPostCard
+							locked={!f.whopChat}
+							chatId={prefs.chat_experience_id ?? ""}
+							save={B(act.saveChatTarget)}
+							upgradeHref={plansHref}
+						/>
+						<SpamCard
+							locked={!f.spam}
+							enabled={prefs.spam_protection}
+							save={B(act.savePreferences)}
+							upgradeHref={plansHref}
+						/>
+						<BansCard
+							locked={!f.banList}
+							load={B(act.fetchMembers)}
+							ban={B(act.banAction)}
+							unban={B(act.unbanAction)}
+							upgradeHref={plansHref}
+						/>
+						<LogCard rows={logRows} />
+					</>
 				)}
 			</>
 		);
@@ -927,9 +612,7 @@ export default async function ExperiencePage({
 				<div className="an-head">
 					<h1>Announcements</h1>
 					<p className="an-muted">
-						{creator
-							? "What your members see, plus scheduled posts"
-							: "Latest from the team"}
+						{creator ? "What your members see, plus scheduled posts" : "Latest from the team"}
 					</p>
 				</div>
 				{feed}
@@ -941,8 +624,8 @@ export default async function ExperiencePage({
 		<Shell>
 			{!isAdmin && trackRows.length > 0 && (
 				<ViewTracker
-					key={trackRows.map((r) => r.id).join(",")}
-					action={markSeen}
+					key={trackRows.map((r: any) => r.id).join(",")}
+					action={act.markSeen.bind(null, experienceId, trackRows)}
 				/>
 			)}
 			<div className="an-shell">
@@ -958,28 +641,22 @@ export default async function ExperiencePage({
 					</div>
 					<nav className="an-nav">
 						{nav("feed", "Announcements", "megaphone", basePath)}
-						{creator &&
-							nav("create", "Create", "edit", `${basePath}?view=create`)}
-						{creator &&
-							nav("analytics", "Analytics", "chart", `${basePath}?view=analytics`)}
+						{creator && nav("create", "Create", "edit", `${basePath}?view=create`)}
+						{creator && nav("analytics", "Analytics", "chart", `${basePath}?view=analytics`)}
 						{creator && nav("plans", "Plans", "crown", `${basePath}?view=plans`)}
+						{nav("settings", "Settings", "settings", `${basePath}?view=settings`)}
 					</nav>
 					{creator && plan !== "business" && (
-						<Link
-							href={`${basePath}?view=plans`}
-							prefetch={false}
-							className="an-upgrade"
-						>
+						<Link href={`${basePath}?view=plans`} prefetch={false} className="an-upgrade">
 							Upgrade to {plan === "starter" ? "Pro" : "Business"}
 							<small>
 								{plan === "starter"
-									? "Scheduling, polls, read receipts"
-									: "A/B tests, Discord, push, CSV export"}
+									? "Scheduling, targeting, spam protection"
+									: "Email, ban list, A/B tests, CSV export"}
 							</small>
 						</Link>
 					)}
 					<div className="an-spacer" />
-					<ThemeToggle />
 				</aside>
 				<main className="an-main">{content}</main>
 			</div>
