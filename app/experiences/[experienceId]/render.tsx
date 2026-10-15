@@ -1,29 +1,30 @@
 // @ts-nocheck
 import type { ReactNode } from "react";
-import {
-	type Attachment,
-	formatSize,
-	kindOf,
-	parseBlocks,
-	type Tok,
-	tokenize,
-} from "@/lib/markup";
+import { type Attachment, FONT_STACK, formatSize, kindOf, parseBlocks, type Tok, tokenize } from "@/lib/markup";
 import { publicUrl } from "@/lib/storage";
+import { trackUrl } from "@/lib/tracking";
 import { Icon } from "./icons";
 import { YouTube } from "./youtube";
 
-function inline(toks: Tok[], key: string): ReactNode[] {
+function inline(toks: Tok[], key: string, postId?: string): ReactNode[] {
 	return toks.map((t, i) => {
 		const k = `${key}-${i}`;
 		if (t.k === "t") return t.v;
-		if (t.k === "b") return <strong key={k}>{inline(t.c, k)}</strong>;
-		if (t.k === "i") return <em key={k}>{inline(t.c, k)}</em>;
-		if (t.k === "u") return <u key={k}>{inline(t.c, k)}</u>;
-		if (t.k === "s") return <s key={k}>{inline(t.c, k)}</s>;
+		if (t.k === "b") return <strong key={k}>{inline(t.c, k, postId)}</strong>;
+		if (t.k === "i") return <em key={k}>{inline(t.c, k, postId)}</em>;
+		if (t.k === "u") return <u key={k}>{inline(t.c, k, postId)}</u>;
+		if (t.k === "s") return <s key={k}>{inline(t.c, k, postId)}</s>;
+		if (t.k === "f") {
+			return (
+				<span key={k} style={{ fontFamily: FONT_STACK[t.f] }}>
+					{inline(t.c, k, postId)}
+				</span>
+			);
+		}
 		if (t.k === "a") {
 			return (
-				<a key={k} className="an-link" href={t.url} target="_blank" rel="noopener noreferrer">
-					{inline(t.c, k)}
+				<a key={k} className="an-link" href={postId ? trackUrl(postId, "app", t.url) : t.url} target="_blank" rel="noopener noreferrer">
+					{inline(t.c, k, postId)}
 				</a>
 			);
 		}
@@ -35,37 +36,30 @@ function inline(toks: Tok[], key: string): ReactNode[] {
 	});
 }
 
-export function RichText({ text }: { text: string }) {
-	const blocks = parseBlocks(text);
+export function RichText({ text, postId }: { text: string; postId?: string }) {
 	return (
 		<div className="an-rich">
-			{blocks.map((b, i) => {
+			{parseBlocks(text).map((b, i) => {
 				if (b.t === "p") {
 					return (
 						<p key={i} className="an-p" style={{ textAlign: b.align }}>
-							{inline(tokenize(b.text), `p${i}`)}
+							{inline(tokenize(b.text), `p${i}`, postId)}
 						</p>
 					);
 				}
 				if (b.t === "h") {
 					return (
 						<div key={i} className={`an-h an-h${b.level}`} style={{ textAlign: b.align }}>
-							{inline(tokenize(b.text), `h${i}`)}
+							{inline(tokenize(b.text), `h${i}`, postId)}
 						</div>
 					);
 				}
 				if (b.t === "ul" || b.t === "ol") {
-					const items = b.items.map((it, n) => (
-						<li key={n}>{inline(tokenize(it), `l${i}-${n}`)}</li>
-					));
+					const items = b.items.map((it, n) => <li key={n}>{inline(tokenize(it), `l${i}-${n}`, postId)}</li>);
 					return b.t === "ul" ? (
-						<ul key={i} className="an-ul" style={{ textAlign: b.align }}>
-							{items}
-						</ul>
+						<ul key={i} className="an-ul" style={{ textAlign: b.align }}>{items}</ul>
 					) : (
-						<ol key={i} className="an-ul" style={{ textAlign: b.align }}>
-							{items}
-						</ol>
+						<ol key={i} className="an-ul" style={{ textAlign: b.align }}>{items}</ol>
 					);
 				}
 				if (b.t === "yt") return <YouTube key={i} id={b.id} />;
@@ -75,6 +69,29 @@ export function RichText({ text }: { text: string }) {
 					</a>
 				);
 			})}
+		</div>
+	);
+}
+
+export function ProductCards({ items, postId }: { items: any; postId?: string }) {
+	const list = (Array.isArray(items) ? items : []).filter((p) => p && typeof p === "object" && p.url);
+	if (list.length === 0) return null;
+	return (
+		<div className="an-products">
+			{list.map((p) => (
+				<div className="an-product" key={p.id}>
+					<span className="an-product-icon">
+						<Icon name="package" size={20} />
+					</span>
+					<div className="an-grow">
+						<b>{p.title || "Product"}</b>
+						<div className="an-muted">Tap to view or buy</div>
+					</div>
+					<a className="an-btn" href={postId ? trackUrl(postId, "app", p.url, "product") : p.url} target="_blank" rel="noopener noreferrer">
+						View product
+					</a>
+				</div>
+			))}
 		</div>
 	);
 }
@@ -99,13 +116,7 @@ export function AttachmentList({ items }: { items: Attachment[] }) {
 				<video key={a.path} className="an-video" controls preload="metadata" src={publicUrl(a.path)} />
 			))}
 			{files.map((a) => (
-				<a
-					key={a.path}
-					className="an-file"
-					href={publicUrl(a.path)}
-					target="_blank"
-					rel="noopener noreferrer"
-				>
+				<a key={a.path} className="an-file" href={publicUrl(a.path)} target="_blank" rel="noopener noreferrer">
 					<Icon name="file" size={18} />
 					<span className="an-file-name">{a.name}</span>
 					<span className="an-muted">{formatSize(a.size)}</span>

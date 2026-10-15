@@ -30,7 +30,8 @@ import {
 	PollBlock,
 	ReactionBar,
 } from "./interactive";
-import { AttachmentList, RichText } from "./render";
+import { AnalyticsView } from "./analytics-view";
+import { AttachmentList, ProductCards, RichText } from "./render";
 import {
 	AppearanceCard,
 	BansCard,
@@ -178,7 +179,7 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 		hint: String(r.secret).slice(-4),
 	}));
 	const logRows =
-		creator && view === "settings" ? await listLog(experienceId, 15).catch(() => []) : [];
+		creator && view === "settings" ? await listLog(experienceId, 40).catch(() => []) : [];
 
 	const now = Date.now();
 	let visible = creator ? all : all.filter((a: any) => isLiveAt(a, now));
@@ -245,8 +246,9 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 					)}
 				</div>
 				<h2 className="an-title">{shownTitle}</h2>
-				<RichText text={a.body} />
+				<RichText text={a.body} postId={a.id} />
 				<AttachmentList items={a.attachments ?? []} />
+				<ProductCards items={a.target_products} postId={a.id} />
 				{a.event_at && <Countdown target={a.event_at} />}
 				{a.poll && (
 					<PollBlock
@@ -345,6 +347,8 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 			</>
 		);
 	} else if (creator && view === "analytics") {
+		content = <AnalyticsView experienceId={experienceId} posts={all} plan={plan} stats={stats} searchParams={searchParams} />;
+	} else if (creator && view === "analytics-old") {
 		const rows = all.map((a: any) => ({ a, s: stats[a.id] as any }));
 		const totalViews = rows.reduce((n: number, r: any) => n + (r.s?.view_count ?? 0), 0);
 		const totalReactions = rows.reduce(
@@ -601,7 +605,7 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 							unban={B(act.unbanAction)}
 							upgradeHref={plansHref}
 						/>
-						<LogCard rows={logRows} />
+						<LogCard rows={logRows} posts={all.map((p: any) => ({ id: p.id, title: p.title, body: p.body }))} />
 					</>
 				)}
 			</>

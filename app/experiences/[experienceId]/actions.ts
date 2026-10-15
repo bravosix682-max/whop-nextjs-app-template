@@ -42,7 +42,7 @@ import {
 	toggleReaction,
 	updateAnnouncement,
 } from "@/lib/supabase";
-import { companyOf, listMembers, listProducts, userInfo } from "@/lib/whop-data";
+import { companyOf, listMembers, listProducts, productUrl, userInfo } from "@/lib/whop-data";
 import { whopsdk } from "@/lib/whop-sdk";
 
 const UUID = /^[0-9a-f-]{36}$/i;
@@ -248,7 +248,7 @@ export async function publish(experienceId: string, _prev: any, formData: FormDa
 		try {
 			const raw = JSON.parse(String(formData.get("targets") || "[]"));
 			if (Array.isArray(raw)) {
-				targets = raw.map(String).filter((x) => /^prod_[A-Za-z0-9]+$/.test(x)).slice(0, 25);
+				targets = raw.filter((x) => x && /^prod_[A-Za-z0-9]+$/.test(String(x.id)) && /^https:\/\/whop\.com\//.test(String(x.url))).slice(0, 10).map((x) => ({ id: String(x.id), title: String(x.title ?? "").slice(0, 120), url: String(x.url).slice(0, 300) }));
 			}
 		} catch {}
 	}
@@ -294,7 +294,7 @@ export async function publish(experienceId: string, _prev: any, formData: FormDa
 		message += " Push and your chosen channels will go out at the scheduled time.";
 	} else {
 		const results = await deliver(
-			{ id, experienceId, title, body, attachments, targeted: targets.length > 0 },
+			{ id, experienceId, title, body, attachments, products: targets }
 			channels,
 		);
 		if (results.length) message += ` ${results.join(" ")}`;
@@ -557,7 +557,8 @@ export async function fetchProducts(experienceId: string) {
 	}
 	try {
 		const company = await companyOf(experienceId);
-		return await listProducts(company.id);
+		const res = await listProducts(company.id);
+		return { ...res, products: res.products.map((p) => ({ ...p, url: productUrl(company.route, p.route) })) };
 	} catch {
 		return { products: [], error: "Could not load products." };
 	}

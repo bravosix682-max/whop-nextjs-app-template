@@ -326,7 +326,7 @@ export async function logDelivery(
 export async function listLog(experienceId: string, limit = 15): Promise<LogRow[]> {
 	return (
 		(await request(
-			`delivery_log?experience_id=eq.${enc(experienceId)}&select=id,channel,ok,detail,created_at&order=created_at.desc&limit=${limit}`,
+			`delivery_log?experience_id=eq.${enc(experienceId)}&&select=id,announcement_id,channel,ok,detail,created_atorder=created_at.desc&limit=${limit}`,
 		)) ?? []
 	);
 }
