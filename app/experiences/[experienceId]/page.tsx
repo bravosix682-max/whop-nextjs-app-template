@@ -17,6 +17,9 @@ import { hasProductAccess } from "@/lib/whop-data";
 import { whopsdk } from "@/lib/whop-sdk";
 import "./announcements.css";
 import * as act from "./actions";
+import * as act2 from "./actions2";
+import { BansPanel } from "./bans";
+import { Reactions } from "./reactions";
 import { UpgradeButton } from "./billing-ui";
 import { Comments } from "./comments";
 import { CreateForm } from "./create-form";
@@ -267,11 +270,11 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 						<AckButton id={a.id} done={s?.my_ack ?? false} onAck={B(act.ack)} />
 					))}
 				<div className="an-card-foot">
-					<ReactionBar
+					<Reactions
 						id={a.id}
 						counts={s?.reaction_counts ?? {}}
 						mine={s?.my_reactions ?? []}
-						onReact={B(act.react)}
+						onReact={B(act2.react)}
 					/>
 					<div className="an-meta">
 						<span>
@@ -331,7 +334,7 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 					settingsHref={`${basePath}?view=settings`}
 					prepareUpload={B(act.prepareUpload)}
 					fetchProducts={B(act.fetchProducts)}
-					fetchMentionMembers={B(act.fetchMentionMembers)}
+					fetchMentionMembers={B(act2.fetchMentionMembers)}
 					initial={
 						editing
 							? {
@@ -598,9 +601,9 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 							save={B(act.savePreferences)}
 							upgradeHref={plansHref}
 						/>
-						<BansCard
+						<BansPanel
 							locked={!f.banList}
-							load={B(act.fetchMembers)}
+							load={B(act2.fetchMembers)}
 							ban={B(act.banAction)}
 							unban={B(act.unbanAction)}
 							upgradeHref={plansHref}

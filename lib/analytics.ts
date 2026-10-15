@@ -11,55 +11,82 @@ export const KIND_COLOR = {
 	email: "#8b7cf6", chat: "#3ecf8e", forum: "#ec4899",
 };
 
-async function call(path: string, init: RequestInit = {}) {
-	const url = process.env.SUPABASE_URL;
-	const key = process.env.SUPABASE_SECRET_KEY;
-	const res = await fetch(`${url}/rest/v1/${path}`, {
-		...init,
+async function call(path: string) {
+	const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${path}`, {
 		cache: "no-store",
-		headers: { apikey: key, "Content-Type": "application/json", ...(init.headers ?? {}) },
+		headers: { apikey: process.env.SUPABASE_SECRET_KEY, "Content-Type": "application/json" },
 	});
-	if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+	if (!res.ok) throw new Error(String(res.status));
 	return (await res.json()) ?? [];
 }
 
 const blank = () => ({ views: 0, reactions: 0, comments: 0, acks: 0, clicks: 0, sent: 0, failed: 0, products: 0 });
 
+function kindOfLabel(label: string) {
+	const l = String(label).toLowerCase();
+	if (l.startsWith("discord")) return "discord";
+	if (l.startsWith("telegram")) return "telegram";
+	if (l.startsWith("whop chat")) return "chat";
+	if (l.startsWith("whop forum")) return "forum";
+	if (l.startsWith("email")) return "email";
+	return "push";
+}
+
 export async function loadAnalytics(experienceId: string, posts: any[], days: number, channelRows: any[]) {
 	const since = new Date(Date.now() - days * 86400000).toISOString();
-	const [daily, byPost, logs] = await Promise.all([
-		call("rpc/an_events", { method: "POST", body: JSON.stringify({ exp: experienceId, since, by_post: false }) }),
-		call("rpc/an_events", { method: "POST", body: JSON.stringify({ exp: experienceId, since, by_post: true }) }),
-		call(
-			`delivery_log?experience_id=eq.${enc(experienceId)}&created_at=gte.${enc(since)}&select=announcement_id,channel,ok,detail,created_at&order=created_at.desc&limit=400`,
-		),
+	const s = enc(since);
+	const warnings: string[] = [];
+	const ids = posts.map((p) => p.id).slice(0, 60);
+	const inList = ids.length ? `announcement_id=in.(${ids.join(",")})` : "";
+
+	const safe = async (label: string, path: string) => {
+		if (!inList && label !== "deliveries") return [];
+		try {
+			return await call(path);
+		} catch {
+			warnings.push(label);
+			return [];
+		}
+	};
+
+	const [views, reactions, comments, acks, clicks, logs] = await Promise.all([
+		safe("views", `announcement_views?${inList}&viewed_at=gte.${s}&select=announcement_id,viewed_at&limit=5000`),
+		safe("reactions", `announcement_reactions?${inList}&created_at=gte.${s}&select=announcement_id,created_at&limit=5000`),
+		safe("comments", `announcement_comments?${inList}&created_at=gte.${s}&select=announcement_id,created_at&limit=5000`),
+		safe("confirmations", `announcement_acks?${inList}&acked_at=gte.${s}&select=announcement_id,acked_at&limit=5000`),
+		safe("click tracking", `click_events?${inList}&created_at=gte.${s}&select=announcement_id,kind,created_at&limit=5000`),
+		safe("deliveries", `delivery_log?experience_id=eq.${enc(experienceId)}&created_at=gte.${s}&select=announcement_id,channel,ok,detail,created_at&order=created_at.desc&limit=400`),
 	]);
 
-	const norm = (c: string) => (c === "app" ? "whop" : KINDS.includes(c) ? c : "whop");
 	const dayList: string[] = [];
 	for (let i = days - 1; i >= 0; i--) dayList.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
 
 	const perDay: Record<string, any> = {};
-	for (const d of dayList) perDay[d] = {};
+	const perPost: Record<string, any> = {};
 	const totals: Record<string, any> = {};
 	for (const k of KINDS) totals[k] = blank();
-	for (const r of daily) {
-		const c = norm(r.ch);
-		const d = String(r.day);
-		perDay[d] = perDay[d] ?? {};
-		perDay[d][c] = perDay[d][c] ?? blank();
-		if (r.metric in perDay[d][c]) perDay[d][c][r.metric] += Number(r.n);
-		if (r.metric in totals[c]) totals[c][r.metric] += Number(r.n);
-	}
+	for (const d of dayList) perDay[d] = {};
 
-	const perPost: Record<string, any> = {};
-	for (const r of byPost) {
-		const id = String(r.post_id);
-		perPost[id] = perPost[id] ?? {};
-		const c = norm(r.ch);
-		perPost[id][c] = perPost[id][c] ?? blank();
-		if (r.metric in perPost[id][c]) perPost[id][c][r.metric] += Number(r.n);
-	}
+	const bump = (iso: string, c: string, m: string, pid?: string) => {
+		const k = KINDS.includes(c) ? c : "whop";
+		const d = String(iso).slice(0, 10);
+		perDay[d] = perDay[d] ?? {};
+		perDay[d][k] = perDay[d][k] ?? blank();
+		perDay[d][k][m] += 1;
+		totals[k][m] += 1;
+		if (pid) {
+			perPost[pid] = perPost[pid] ?? {};
+			perPost[pid][k] = perPost[pid][k] ?? blank();
+			perPost[pid][k][m] += 1;
+		}
+	};
+
+	for (const r of views) bump(r.viewed_at, "whop", "views", r.announcement_id);
+	for (const r of reactions) bump(r.created_at, "whop", "reactions", r.announcement_id);
+	for (const r of comments) bump(r.created_at, "whop", "comments", r.announcement_id);
+	for (const r of acks) bump(r.acked_at, "whop", "acks", r.announcement_id);
+	for (const r of clicks) bump(r.created_at, r.kind === "app" ? "whop" : r.kind, "clicks", r.announcement_id);
+	for (const l of logs) bump(l.created_at, kindOfLabel(l.channel), l.ok ? "sent" : "failed", l.announcement_id ?? undefined);
 
 	let emailRecipients = 0;
 	for (const l of logs) {
@@ -83,5 +110,5 @@ export async function loadAnalytics(experienceId: string, posts: any[], days: nu
 		for (const id of d.channelIds ?? []) if (kindById[id]) add(kindById[id]);
 	}
 
-	return { since, dayList, perDay, totals, perPost, logs, emailRecipients, pending };
+	return { since, dayList, perDay, totals, perPost, logs, emailRecipients, pending, warnings };
 }

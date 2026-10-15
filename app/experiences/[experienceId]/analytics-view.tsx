@@ -245,7 +245,7 @@ export async function AnalyticsView({ experienceId, posts, plan, stats, searchPa
 				<Kpi icon="chart" label="Engagement rate" value={inApp && views ? pct(engaged, views) : "-"} hint="Interactions per view" />
 			</div>
 
-			{noData && <div className="an-card"><p className="an-muted">No activity in this period yet. Post an announcement and the charts will fill in.</p></div>}
+						{data.warnings?.length > 0 && <div className="an-card"><p className="an-muted">Some numbers could not be loaded ({data.warnings.join(", ")}). Everything else on this page is accurate.{data.warnings.includes("click tracking") ? " Click counts need the one-time click_events setup in Supabase." : ""}</p></div>} <div className="an-card"><p className="an-muted">No activity in this period yet. Post an announcement and the charts will fill in.</p></div>}
 
 			{f.fullAnalytics ? charts : (
 				<div className="an-lockwrap">
