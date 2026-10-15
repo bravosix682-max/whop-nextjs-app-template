@@ -294,9 +294,9 @@ export async function publish(experienceId: string, _prev: any, formData: FormDa
 		message += " Push and your chosen channels will go out at the scheduled time.";
 	} else {
 		const results = await deliver(
-			{ id, experienceId, title, body, attachments, products: targets }
-			channels,
-		);
+    { id, experienceId, title, body, attachments, products },
+    channels,
+);
 		if (results.length) message += ` ${results.join(" ")}`;
 	}
 	revalidatePath(c.base);
