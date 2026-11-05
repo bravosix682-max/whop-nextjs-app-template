@@ -219,34 +219,66 @@ async function run(item: any, label: string, job: () => Promise<any>) {
 }
 
 export async function deliver(item: any, channels: any): Promise<string[]> {
-	const deadline = Date.now() + 8000;
-	const prefs = await getPrefs(item.experienceId);
 	const out: string[] = [];
-	const jobs: Promise<string>[] = [];
+	try {
+		const started = Date.now();
+		const prefs = await getPrefs(item.experienceId);
+		const jobs: Promise<string>[] = [];
 
-	if (channels.push) {
-		if (!prefs.push_enabled) out.push("Push is turned off in Settings.");
-		else {
-			jobs.push(run(item, "Push", () => notifyExperience({ experienceId: item.experienceId, title: item.title, content: toPlain(item.body) || item.title })));
+		if (channels.push) {
+			if (!prefs.push_enabled) out.push("Push is turned off in Settings.");
+			else {
+				jobs.push(
+					run(item, "Push", () =>
+						notifyExperience({
+							experienceId: item.experienceId,
+							title: item.title,
+							content: toPlain(item.body) || item.title,
+						}),
+					),
+				);
+			}
 		}
-	}
-	const ids: string[] = Array.isArray(channels.channelIds) ? channels.channelIds : [];
-	if (ids.length > 0) {
-		const rows = await listChannels(item.experienceId);
-		for (const id of ids) {
-			const ch = rows.find((r) => r.id === id);
-			if (!ch) continue;
-			const label = `${ch.kind === "discord" ? "Discord" : "Telegram"} (${ch.name})`;
-			jobs.push(run(item, label, () => (ch.kind === "discord" ? sendDiscord(ch.secret, item) : sendTelegram(ch, item))));
+
+		const ids: string[] = Array.isArray(channels.channelIds) ? channels.channelIds : [];
+		if (ids.length > 0) {
+			const rows = await listChannels(item.experienceId);
+			for (const id of ids) {
+				const ch = rows.find((r) => r.id === id);
+				if (!ch) continue;
+				const label = `${ch.kind === "discord" ? "Discord" : "Telegram"} (${ch.name})`;
+				jobs.push(
+					run(item, label, () =>
+						ch.kind === "discord" ? sendDiscord(ch.secret, item) : sendTelegram(ch, item),
+					),
+				);
+			}
 		}
+		if (channels.chat) jobs.push(run(item, "Whop chat", () => sendChat(item, prefs.chat_experience_id)));
+		if (channels.forum) jobs.push(run(item, "Whop forum", () => sendForum(item)));
+		if (channels.email) jobs.push(run(item, "Email", () => sendEmail(item, started + 6000)));
+
+		const timer = new Promise<string[]>((resolve) =>
+			setTimeout(
+				() => resolve(["Some deliveries are still finishing. Check Settings, Recent deliveries."]),
+				5500,
+			),
+		);
+		out.push(...(await Promise.race([Promise.all(jobs), timer])));
+	} catch (e) {
+		out.push("Your post is saved, but sending hit a problem.");
+		try {
+			await logDelivery(
+				item.experienceId,
+				item.id ?? null,
+				"App",
+				false,
+				e instanceof Error ? e.message.slice(0, 300) : "error",
+			);
+		} catch {}
 	}
-	if (channels.chat) jobs.push(run(item, "Whop chat", () => sendChat(item, prefs.chat_experience_id)));
-	if (channels.forum) jobs.push(run(item, "Whop forum", () => sendForum(item)));
-	out.push(...(await Promise.all(jobs)));
-	if (channels.email) out.push(await run(item, "Email", () => sendEmail(item, deadline)));
 	return out;
 }
-
 export async function testChannel(ch: any): Promise<string> {
 	const item = { experienceId: ch.experience_id, title: "Test announcement", body: "Your channel is connected. Real announcements will appear here.", attachments: [] };
 	const label = ch.kind === "discord" ? "Discord" : "Telegram";

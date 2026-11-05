@@ -23,7 +23,7 @@ export async function notifyExperience(opts: {
 					? { user_ids: opts.userIds }
 					: {}),
 			}),
-			signal: AbortSignal.timeout(8000),
+			signal: AbortSignal.timeout(4000),
 		});
 		const text = await res.text();
 		if (res.ok) return { ok: true, detail: "" };
