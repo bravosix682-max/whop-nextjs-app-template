@@ -282,7 +282,7 @@ export async function publish(experienceId: string, _prev: any, formData: FormDa
 		alt_title: altTitle,
 		poll,
 	});
-		let message = scheduledLater ? "Scheduled." : "Posted.";
+	let message = scheduledLater ? "Scheduled." : "Posted.";
 	try {
 		await patchPost(id, {
 			comments_enabled: commentsEnabled,
@@ -310,7 +310,10 @@ export async function publish(experienceId: string, _prev: any, formData: FormDa
 		console.error("delivery setup failed", e);
 		message += " Sending could not be started.";
 	}
+	revalidatePath(c.base);
 	return { ok: true, message };
+}
+
 export async function update(experienceId: string, _prev: any, formData: FormData) {
 	const c = await ctx(experienceId);
 	if (!c.isAdmin) return { ok: false, message: "Only admins can edit." };
