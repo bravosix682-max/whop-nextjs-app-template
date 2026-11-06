@@ -282,27 +282,35 @@ export async function publish(experienceId: string, _prev: any, formData: FormDa
 		alt_title: altTitle,
 		poll,
 	});
-	await patchPost(id, {
-		comments_enabled: commentsEnabled,
-		target_products: targets.length ? targets : null,
-		attachments: attachments.length ? attachments : null,
-	});
-
-	let message = scheduledLater ? "Scheduled." : "Posted.";
-	if (scheduledLater) {
-		await scheduleDelivery(id, channels);
-		message += " Push and your chosen channels will go out at the scheduled time.";
-	} else {
-		const results = await deliver(
-    { id, experienceId, title, body, attachments, products },
-    channels,
-);
-		if (results.length) message += ` ${results.join(" ")}`;
+		let message = scheduledLater ? "Scheduled." : "Posted.";
+	try {
+		await patchPost(id, {
+			comments_enabled: commentsEnabled,
+			target_products: targets.length ? targets : null,
+			attachments: attachments.length ? attachments : null,
+		});
+	} catch (e) {
+		console.error("patchPost failed", e);
+		message += " (Some extras, such as attachments, could not be saved.)";
 	}
-	revalidatePath(c.base);
+	try {
+		await scheduleDelivery(id, channels);
+		if (scheduledLater) {
+			message += " Push and your channels will go out at the scheduled time.";
+		} else {
+			message += " Push and your channels are being sent. Results appear in Settings, Recent deliveries.";
+			const base = (process.env.APP_URL || "https://halonetic-announcements.netlify.app").replace(/\/+$/, "");
+			await fetch(`${base}/api/deliver`, {
+				method: "POST",
+				headers: { "x-cron-secret": process.env.CRON_SECRET ?? "" },
+				signal: AbortSignal.timeout(2500),
+			}).catch(() => {});
+		}
+	} catch (e) {
+		console.error("delivery setup failed", e);
+		message += " Sending could not be started.";
+	}
 	return { ok: true, message };
-}
-
 export async function update(experienceId: string, _prev: any, formData: FormData) {
 	const c = await ctx(experienceId);
 	if (!c.isAdmin) return { ok: false, message: "Only admins can edit." };
