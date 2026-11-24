@@ -261,7 +261,7 @@ export async function publish(experienceId: string, _prev: any, formData: FormDa
 	}
 	const channels = {
 		push: true,
-		replace it with email: false,
+		email: false,
 		chat: f.whopChat && formData.get("chat") === "on",
 		forum: f.whopForum && formData.get("forum") === "on",
 		channelIds,
