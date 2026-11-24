@@ -1,6 +1,6 @@
 // @ts-nocheck
 import type { ReactNode } from "react";
-import { type Attachment, FONT_STACK, formatSize, kindOf, parseBlocks, type Tok, tokenize } from "@/lib/markup";
+import { type Attachment, FONT_STACK, formatSize, HL, kindOf, LIST_TYPE_CSS, parseBlocks, type Tok, tokenize } from "@/lib/markup";
 import { publicUrl } from "@/lib/storage";
 import { trackUrl } from "@/lib/tracking";
 import { Icon } from "./icons";
@@ -19,6 +19,13 @@ function inline(toks: Tok[], key: string, postId?: string): ReactNode[] {
 				<span key={k} style={{ fontFamily: FONT_STACK[t.f] }}>
 					{inline(t.c, k, postId)}
 				</span>
+			);
+		}
+		if (t.k === "h") {
+			return (
+				<mark key={k} className="an-hl" style={{ background: HL[t.color] }}>
+					{inline(t.c, k, postId)}
+				</mark>
 			);
 		}
 		if (t.k === "a") {
@@ -57,9 +64,13 @@ export function RichText({ text, postId }: { text: string; postId?: string }) {
 				if (b.t === "ul" || b.t === "ol") {
 					const items = b.items.map((it, n) => <li key={n}>{inline(tokenize(it), `l${i}-${n}`, postId)}</li>);
 					return b.t === "ul" ? (
-						<ul key={i} className="an-ul" style={{ textAlign: b.align }}>{items}</ul>
+						<ul key={i} className="an-ul" style={{ textAlign: b.align, listStyleType: b.bullet ? `"${b.bullet}  "` : undefined }}>
+							{items}
+						</ul>
 					) : (
-						<ol key={i} className="an-ul" style={{ textAlign: b.align }}>{items}</ol>
+						<ol key={i} className="an-ul" type={b.style && b.style !== "1" ? b.style : undefined} style={{ textAlign: b.align, listStyleType: b.style && b.style !== "1" ? LIST_TYPE_CSS[b.style] : undefined }}>
+							{items}
+						</ol>
 					);
 				}
 				if (b.t === "yt") return <YouTube key={i} id={b.id} />;

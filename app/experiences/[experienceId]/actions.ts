@@ -44,6 +44,8 @@ import {
 } from "@/lib/supabase";
 import { companyOf, listMembers, listProducts, productUrl, userInfo } from "@/lib/whop-data";
 import { whopsdk } from "@/lib/whop-sdk";
+import { LANGS } from "@/lib/langs";
+import { translateAnnouncement } from "@/lib/translate";
 
 const UUID = /^[0-9a-f-]{36}$/i;
 
@@ -259,7 +261,7 @@ export async function publish(experienceId: string, _prev: any, formData: FormDa
 	}
 	const channels = {
 		push: true,
-		email: f.email && emailReady() && formData.get("email") === "on",
+		replace it with email: false,
 		chat: f.whopChat && formData.get("chat") === "on",
 		forum: f.whopForum && formData.get("forum") === "on",
 		channelIds,
@@ -662,4 +664,28 @@ export async function checkPlan(experienceId: string): Promise<string> {
 	forget(`plan:${experienceId}`);
 	const i = await getPlanInfo(experienceId);
 	return i.plan;
+}
+export async function translatePost(experienceId: string, postId: string, lang: string) {
+	if (!UUID.test(postId) || !LANGS.some((l) => l.code === lang)) {
+		return { ok: false, error: "Pick a language from the list." };
+	}
+	const c = await ctx(experienceId);
+	if (!c.canView) return { ok: false, error: "No access." };
+	if (!claim(`tr:${c.userId}`, 800)) return { ok: false, error: "One moment, then try again." };
+	const post: any = await getAnnouncement(experienceId, postId);
+	if (!post) return { ok: false, error: "This announcement no longer exists." };
+	try {
+		const out = await cached(`tr:${postId}:${lang}:${post.title.length}:${post.body.length}`, 3_600_000, () =>
+			translateAnnouncement(post.title, post.body, lang),
+		);
+		return { ok: true, title: out.title, body: out.body };
+	} catch (e) {
+		const quota = e instanceof Error && e.message === "QUOTA";
+		return {
+			ok: false,
+			error: quota
+				? "The free translation limit for today has been reached. Please try again tomorrow."
+				: "Translation is unavailable right now. Please try again in a moment.",
+		};
+	}
 }

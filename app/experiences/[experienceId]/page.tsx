@@ -13,7 +13,7 @@ import {
 import { emailReady } from "@/lib/deliver";
 import { FEATURES, PLAN_NAMES, PLAN_PRICES } from "@/lib/plans";
 import { GRACE_DAYS, getPlanInfo, getStats, listAnnouncements } from "@/lib/supabase";
-import { hasProductAccess } from "@/lib/whop-data";
+import { hasProductAccess, userInfo } from "@/lib/whop-data";
 import { whopsdk } from "@/lib/whop-sdk";
 import "./announcements.css";
 import * as act from "./actions";
@@ -35,6 +35,7 @@ import {
 } from "./interactive";
 import { AnalyticsView } from "./analytics-view";
 import { AttachmentList, ProductCards, RichText } from "./render";
+import { TranslateBox } from "./translate";
 import {
 	AppearanceCard,
 	BansCard,
@@ -82,8 +83,6 @@ const PLAN_CARDS = (withEmail: boolean) => [
 		plan: "business",
 		blurb: "For brands running serious communities",
 		items: [
-			"Everything in Pro",
-			withEmail ? "Email to members" : "Email to members (when enabled)",
 			"User ban list",
 			"@ mention members",
 			"A/B test two headlines",
@@ -159,10 +158,11 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 	const [{ rows: all, failed: loadError }, planInfo, stats, comments, prefs, restricted] =
 		await Promise.all([listP, infoP, statsP, commentsP, prefsP, banP]);
 
+	const me = await userInfo(userId).catch(() => ({ name: "", handle: "" }));
 	const plan = planInfo.plan;
 	const f = FEATURES[plan];
 	const creator = isAdmin;
-	const emailOn = emailReady();
+	const emailOn = false;
 	const allowed = creator ? ["create", "analytics", "plans", "settings"] : ["settings"];
 	const view = allowed.includes(viewParam ?? "") ? viewParam : "feed";
 
@@ -252,6 +252,7 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 				<RichText text={a.body} postId={a.id} />
 				<AttachmentList items={a.attachments ?? []} />
 				<ProductCards items={a.target_products} postId={a.id} />
+				<TranslateBox postId={a.id} onTranslate={B(act.translatePost)} />
 				{a.event_at && <Countdown target={a.event_at} />}
 				{a.poll && (
 					<PollBlock
@@ -290,6 +291,7 @@ export default async function ExperiencePage({ params, searchParams }: any) {
 					initial={comments.filter((cm: any) => cm.announcement_id === a.id)}
 					isAdmin={isAdmin}
 					meId={userId}
+					meName={me.name}
 					restricted={restricted}
 					onAdd={B(act.addComment)}
 					onDelete={B(act.deleteComment)}

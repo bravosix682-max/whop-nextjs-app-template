@@ -11,7 +11,7 @@ import {
 export type ThemeMode = "system" | "light" | "dark";
 
 const FONT_URL =
-	"https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap";
+	"https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Anton&family=Bangers&family=Bebas+Neue&family=Caveat&family=Dancing+Script&family=JetBrains+Mono&family=Lobster&family=Lora&family=Merriweather&family=Montserrat&family=Orbitron&family=Oswald&family=Pacifico&family=Permanent+Marker&family=Playfair+Display&family=Poppins&family=Righteous&family=Silkscreen&display=swap";
 
 const ThemeContext = createContext<{
 	mode: ThemeMode;

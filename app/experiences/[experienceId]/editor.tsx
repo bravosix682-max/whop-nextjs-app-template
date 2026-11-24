@@ -2,118 +2,55 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ALLOWED_ACCEPT, FONT_LABELS, formatSize, kindOf, toEditorHtml, youtubeId } from "@/lib/markup";
+import { FACE_OF, fontKey, htmlToMarkup } from "@/lib/editor-md";
+import {
+	ALLOWED_ACCEPT,
+	BULLET_CHOICES,
+	FONT_LABELS,
+	FONT_STACK,
+	formatSize,
+	HL,
+	kindOf,
+	LIST_TYPE_CSS,
+	NUM_STYLES,
+	toEditorHtml,
+	youtubeId,
+} from "@/lib/markup";
 import { Icon } from "./icons";
 
 const EMOJI =
 	"😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 😉 😍 🥰 😘 😎 🤩 🥳 😏 🤔 😮 😢 😭 😡 🤯 😴 🙏 👍 👎 👏 🙌 💪 🤝 👀 🔥 ✨ 🎉 🎊 🏆 🥇 🚀 💡 📣 📢 📌 📅 ⏰ 💰 💎 ❤️ 🧡 💛 💚 💙 💜 🖤 ✅ ❌ ⚠️ ❗ ❓ ➡️ ⭐ 🌟 🎁 🎯 📈 📉".split(" ");
 
-const FACE_OF: Record<string, string> = { "": "Space Grotesk", serif: "Georgia", mono: "Courier New", rounded: "Trebuchet MS", display: "Impact", hand: "Comic Sans MS" };
-const FACES: [string, string][] = [["georgia", "serif"], ["times", "serif"], ["courier", "mono"], ["menlo", "mono"], ["consolas", "mono"], ["monospace", "mono"], ["trebuchet", "rounded"], ["impact", "display"], ["arial black", "display"], ["comic", "hand"], ["segoe print", "hand"]];
-
-function fontKey(face: string) {
-	const f = String(face || "").toLowerCase();
-	for (const [n, k] of FACES) if (f.includes(n)) return k;
-	return "";
+function HiIcon() {
+	return (
+		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+			<path d="m9 11-6 6v3h9l3-3" />
+			<path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
+		</svg>
+	);
 }
 
-function wrapMark(m: string, inner: string) {
-	return inner
-		.split("\n")
-		.map((seg) => {
-			const lead = seg.match(/^\s*/)[0];
-			const trail = seg.match(/\s*$/)[0];
-			const core = seg.trim();
-			return core ? `${lead}${m}${core}${m}${trail}` : seg;
-		})
-		.join("\n");
-}
-
-function inl(node: Node): string {
-	if (node.nodeType === 3) return node.nodeValue ?? "";
-	if (node.nodeType !== 1) return "";
-	const el = node as HTMLElement;
-	const tag = el.tagName;
-	if (tag === "BR") return "\n";
-	let inner = Array.from(el.childNodes).map(inl).join("");
-	const st = el.style;
-	if (tag === "A") {
-		const href = el.getAttribute("href") || "";
-		return /^https?:\/\//i.test(href) && inner.trim() ? `[${inner.replace(/[\[\]]/g, "")}](${href})` : inner;
-	}
-	const fk = el.getAttribute("data-font") || (tag === "FONT" ? fontKey(el.getAttribute("face")) : fontKey(st.fontFamily));
-	if (fk && inner.trim()) inner = `{{${fk}|${inner}}}`;
-	const deco = `${st.textDecoration || ""} ${st.textDecorationLine || ""}`;
-	if (tag === "B" || tag === "STRONG" || st.fontWeight === "bold" || Number(st.fontWeight) >= 600) inner = wrapMark("**", inner);
-	if (tag === "I" || tag === "EM" || st.fontStyle === "italic") inner = wrapMark("*", inner);
-	if (tag === "U" || /underline/.test(deco)) inner = wrapMark("__", inner);
-	if (tag === "S" || tag === "STRIKE" || tag === "DEL" || /line-through/.test(deco)) inner = wrapMark("~~", inner);
-	return inner;
-}
-
-const BLOCK = new Set(["P", "DIV", "H1", "H2", "H3", "UL", "OL", "BLOCKQUOTE", "LI"]);
-const alignOf = (el: HTMLElement) => {
-	const a = el.style?.textAlign || el.getAttribute("align") || "";
-	return a === "center" || a === "right" ? a : "";
-};
-const fence = (a: string, s: string) => (a ? `:::${a}\n${s}\n:::` : s);
-
-function htmlToMarkup(root: HTMLElement): string {
-	const parts: string[] = [];
-	let run = "";
-	const flush = () => {
-		if (run.trim()) parts.push(run.trim());
-		run = "";
-	};
-	const child = (n: Node) => {
-		if (n.nodeType === 1 && BLOCK.has((n as HTMLElement).tagName)) {
-			flush();
-			block(n as HTMLElement);
-		} else run += inl(n);
-	};
-	const block = (el: HTMLElement) => {
-		const tag = el.tagName;
-		const a = alignOf(el);
-		if (tag === "UL" || tag === "OL") {
-			const items = Array.from(el.children)
-				.filter((c) => c.tagName === "LI")
-				.map((li, i) => `${tag === "UL" ? "- " : `${i + 1}. `}${inl(li).replace(/\n+/g, " ").trim()}`);
-			if (items.length) parts.push(fence(a, items.join("\n")));
-		} else if (tag === "H1" || tag === "H2" || tag === "H3") {
-			const t = inl(el).replace(/\n+/g, " ").trim();
-			if (t) parts.push(fence(a, `${"#".repeat(Number(tag[1]))} ${t}`));
-		} else if (Array.from(el.children).some((c) => BLOCK.has(c.tagName))) {
-			for (const c of Array.from(el.childNodes)) child(c);
-			flush();
-		} else {
-			const t = inl(el).trim();
-			if (t) parts.push(fence(a, t));
-		}
-	};
-	for (const n of Array.from(root.childNodes)) child(n);
-	flush();
-	return parts.join("\n\n");
-}
-
-function Tool({ title, icon, on, onClick }: any) {
+function Tool({ title, icon, on, onClick, children }: any) {
 	return (
 		<button type="button" className={`an-tool${on ? " on" : ""}`} title={title} onMouseDown={(e) => e.preventDefault()} onClick={onClick}>
-			<Icon name={icon} size={16} />
+			{children ?? <Icon name={icon} size={16} />}
 		</button>
 	);
 }
 
-function Pop({ onClose, children, wide }: any) {
+function Pop({ onClose, children, wide, cls }: any) {
 	return (
 		<>
 			<div className="an-backdrop" onClick={onClose} />
-			<div className={`an-pop${wide ? " wide" : ""}`}>
+			<div className={`an-pop${wide ? " wide" : ""}${cls ? ` ${cls}` : ""}`}>
 				<div className="an-sheet-grip" />
 				{children}
 			</div>
 		</>
 	);
 }
+
+const noBlur = (e: any) => e.preventDefault();
 
 export function RichEditor({ value, onChange, attach, attachMax, attachMb, mentions, prepareUpload, fetchMentionMembers }: any) {
 	const box = useRef<HTMLDivElement>(null);
@@ -171,9 +108,24 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 		return () => document.removeEventListener("selectionchange", h);
 	}, []);
 
+	// a numbered list must not keep bullet styling, and a bullet list must not keep a number type
+	function fixLists() {
+		const el = box.current;
+		if (!el) return;
+		el.querySelectorAll("ol").forEach((o: any) => {
+			o.removeAttribute("data-bullet");
+			if (o.style.listStyleType && /^["']/.test(o.style.listStyleType)) o.style.listStyleType = "";
+		});
+		el.querySelectorAll("ul").forEach((u: any) => {
+			u.removeAttribute("type");
+			if (u.style.listStyleType && /alpha|roman|decimal/.test(u.style.listStyleType)) u.style.listStyleType = "";
+		});
+	}
+
 	function emit() {
 		const el = box.current;
 		if (!el) return;
+		fixLists();
 		try {
 			const md = htmlToMarkup(el);
 			last.current = md;
@@ -194,8 +146,28 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 		}
 	}
 
+	// when the caret sits inside a list, treat the whole list as selected so list changes apply to every item
+	function expandToList() {
+		const root = box.current;
+		const sel = window.getSelection();
+		if (!root || !sel || !sel.rangeCount || !sel.isCollapsed) return;
+		let n: Node | null = sel.anchorNode;
+		while (n && n !== root) {
+			const tag = n.nodeType === 1 ? (n as HTMLElement).tagName : "";
+			if (tag === "UL" || tag === "OL") {
+				const r = document.createRange();
+				r.selectNodeContents(n);
+				sel.removeAllRanges();
+				sel.addRange(r);
+				return;
+			}
+			n = n.parentNode;
+		}
+	}
+
 	function cmd(c: string, v?: string) {
 		restore();
+		if (c === "insertUnorderedList" || c === "insertOrderedList") expandToList();
 		document.execCommand(c, false, v);
 		emit();
 		refresh();
@@ -207,6 +179,77 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 			document.execCommand("styleWithCSS", false, "false");
 			document.execCommand("defaultParagraphSeparator", false, "p");
 		} catch {}
+	}
+
+	function highlight(color: string) {
+		restore();
+		const r = saved.current;
+		if (color && (!r || r.collapsed)) {
+			setNote("Select the words you want to highlight first, then pick a color.");
+			close();
+			return;
+		}
+		setNote("");
+		try {
+			document.execCommand("styleWithCSS", false, "true");
+			document.execCommand("hiliteColor", false, color ? HL[color] : "transparent");
+			document.execCommand("styleWithCSS", false, "false");
+		} catch {}
+		emit();
+		close();
+	}
+
+	function listStyle(kind: "ul" | "ol", opt: string) {
+		restore();
+		expandToList();
+		const root = box.current;
+		if (!root) return;
+		const TAG = kind.toUpperCase();
+		const findLists = (): HTMLElement[] => {
+			const sel = window.getSelection();
+			const out: HTMLElement[] = [];
+			let n: Node | null = sel ? sel.anchorNode : null;
+			while (n && n !== root) {
+				if (n.nodeType === 1 && (n as HTMLElement).tagName === TAG) return [n as HTMLElement];
+				n = n.parentNode;
+			}
+			if (sel && sel.rangeCount) {
+				const r = sel.getRangeAt(0);
+				root.querySelectorAll(kind).forEach((l: any) => {
+					if (r.intersectsNode(l)) out.push(l);
+				});
+			}
+			return out;
+		};
+		let lists = findLists();
+		if (lists.length === 0) {
+			document.execCommand(kind === "ul" ? "insertUnorderedList" : "insertOrderedList");
+			lists = findLists();
+		}
+		if (lists.length === 0) {
+			close();
+			return;
+		}
+		for (const list of lists) {
+			if (kind === "ul") {
+				if (opt === "-") {
+					list.removeAttribute("data-bullet");
+					list.style.listStyleType = "";
+				} else {
+					list.setAttribute("data-bullet", opt);
+					list.style.listStyleType = `"${opt}  "`;
+				}
+			} else if (opt === "1") {
+				list.removeAttribute("type");
+				list.style.listStyleType = "";
+			} else {
+				list.setAttribute("type", opt);
+				list.style.listStyleType = LIST_TYPE_CSS[opt];
+			}
+		}
+		emit();
+		refresh();
+		close();
 	}
 
 	function insertHtml(html: string) {
@@ -297,7 +340,7 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 		<div className="an-editor">
 			<div className="an-tools">
 				<div className="an-pop-wrap">
-					<button type="button" className="an-tool" title="Text style" onMouseDown={(e) => e.preventDefault()} onClick={() => toggle("style")}>
+					<button type="button" className="an-tool" title="Text style" onMouseDown={noBlur} onClick={() => toggle("style")}>
 						<span className="an-tool-label">{blockLabel}</span>
 						<Icon name="chevron" size={12} />
 					</button>
@@ -305,7 +348,7 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 						<Pop onClose={close}>
 							<div className="an-list">
 								{[["p", "Normal text"], ["h1", "Heading 1"], ["h2", "Heading 2"], ["h3", "Heading 3"]].map(([k, label]) => (
-									<button key={k} type="button" className={`an-list-item${st.blk === k ? " on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => cmd("formatBlock", `<${k}>`)}>
+									<button key={k} type="button" className={`an-list-item${st.blk === k ? " on" : ""}`} onMouseDown={noBlur} onClick={() => cmd("formatBlock", `<${k}>`)}>
 										{label}
 									</button>
 								))}
@@ -314,15 +357,22 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 					)}
 				</div>
 				<div className="an-pop-wrap">
-					<button type="button" className="an-tool" title="Font" onMouseDown={(e) => e.preventDefault()} onClick={() => toggle("font")}>
+					<button type="button" className="an-tool" title="Font" onMouseDown={noBlur} onClick={() => toggle("font")}>
 						<span className="an-tool-label">{fontLabel}</span>
 						<Icon name="chevron" size={12} />
 					</button>
 					{menu === "font" && (
-						<Pop onClose={close}>
+						<Pop onClose={close} wide cls="an-font-pop">
 							<div className="an-list">
 								{FONT_LABELS.map(([k, label]) => (
-									<button key={k || "default"} type="button" className={`an-list-item${st.font === k ? " on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => cmd("fontName", FACE_OF[k])}>
+									<button
+										key={k || "default"}
+										type="button"
+										className={`an-list-item an-font-item${st.font === k ? " on" : ""}`}
+										style={{ fontFamily: FONT_STACK[k] || undefined }}
+										onMouseDown={noBlur}
+										onClick={() => cmd("fontName", FACE_OF[k])}
+									>
 										{label}
 									</button>
 								))}
@@ -335,23 +385,57 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 				<Tool title="Italic (Ctrl+I)" icon="italic" on={st.i} onClick={() => cmd("italic")} />
 				<Tool title="Underline (Ctrl+U)" icon="underline" on={st.u} onClick={() => cmd("underline")} />
 				<Tool title="Strikethrough" icon="strike" on={st.s} onClick={() => cmd("strikeThrough")} />
+				<div className="an-pop-wrap">
+					<button type="button" className="an-tool" title="Highlight text" onMouseDown={noBlur} onClick={() => toggle("hl")}>
+						<HiIcon />
+						<Icon name="chevron" size={12} />
+					</button>
+					{menu === "hl" && (
+						<Pop onClose={close}>
+							<div className="an-hl-grid">
+								{Object.entries(HL).map(([k, hex]) => (
+									<button key={k} type="button" className="an-hl-sw" title={k} style={{ background: hex as string }} onMouseDown={noBlur} onClick={() => highlight(k)} />
+								))}
+							</div>
+							<button type="button" className="an-list-item" onMouseDown={noBlur} onClick={() => highlight("")}>
+								No highlight
+							</button>
+						</Pop>
+					)}
+				</div>
 				<span className="an-tool-sep" />
 				<div className="an-pop-wrap">
-					<button type="button" className={`an-tool${st.ul || st.ol ? " on" : ""}`} title="Lists" onMouseDown={(e) => e.preventDefault()} onClick={() => toggle("list")}>
+					<button type="button" className={`an-tool${st.ul || st.ol ? " on" : ""}`} title="Lists" onMouseDown={noBlur} onClick={() => toggle("list")}>
 						<Icon name={st.ol ? "listOrdered" : "list"} size={16} />
 						<Icon name="chevron" size={12} />
 					</button>
 					{menu === "list" && (
-						<Pop onClose={close}>
+						<Pop onClose={close} wide>
 							<div className="an-list">
-								<button type="button" className={`an-list-item${st.ul ? " on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => cmd("insertUnorderedList")}>Bulleted list</button>
-								<button type="button" className={`an-list-item${st.ol ? " on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => cmd("insertOrderedList")}>Numbered list</button>
+								<button type="button" className={`an-list-item${st.ul ? " on" : ""}`} onMouseDown={noBlur} onClick={() => cmd("insertUnorderedList")}>Bulleted list</button>
+								<div className="an-list-head">Bullet style</div>
+								<div className="an-style-row">
+									{["-", ...BULLET_CHOICES].map((ch) => (
+										<button key={ch} type="button" className="an-style-chip" onMouseDown={noBlur} onClick={() => listStyle("ul", ch)}>
+											{ch === "-" ? "•" : ch}
+										</button>
+									))}
+								</div>
+								<button type="button" className={`an-list-item${st.ol ? " on" : ""}`} onMouseDown={noBlur} onClick={() => cmd("insertOrderedList")}>Numbered list</button>
+								<div className="an-list-head">Number style</div>
+								<div className="an-style-row">
+									{NUM_STYLES.map(([v, label]) => (
+										<button key={v} type="button" className="an-style-chip wide" onMouseDown={noBlur} onClick={() => listStyle("ol", v)}>
+											{label}
+										</button>
+									))}
+								</div>
 							</div>
 						</Pop>
 					)}
 				</div>
 				<div className="an-pop-wrap">
-					<button type="button" className="an-tool" title="Alignment" onMouseDown={(e) => e.preventDefault()} onClick={() => toggle("align")}>
+					<button type="button" className="an-tool" title="Alignment" onMouseDown={noBlur} onClick={() => toggle("align")}>
 						<Icon name={st.al === "center" ? "alignCenter" : st.al === "right" ? "alignRight" : "alignLeft"} size={16} />
 						<Icon name="chevron" size={12} />
 					</button>
@@ -359,7 +443,7 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 						<Pop onClose={close}>
 							<div className="an-list">
 								{[["left", "justifyLeft", "Align left"], ["center", "justifyCenter", "Center"], ["right", "justifyRight", "Align right"]].map(([k, c, label]) => (
-									<button key={k} type="button" className={`an-list-item${st.al === k ? " on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => cmd(c)}>
+									<button key={k} type="button" className={`an-list-item${st.al === k ? " on" : ""}`} onMouseDown={noBlur} onClick={() => cmd(c)}>
 										{label}
 									</button>
 								))}
@@ -370,7 +454,7 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 				<span className="an-tool-sep" />
 				{attach && <Tool title="Attach image, video, or file" icon="paperclip" onClick={() => fileRef.current?.click()} />}
 				<div className="an-pop-wrap">
-					<button type="button" className="an-tool" title="Insert" onMouseDown={(e) => e.preventDefault()} onClick={() => toggle("plus")}>
+					<button type="button" className="an-tool" title="Insert" onMouseDown={noBlur} onClick={() => toggle("plus")}>
 						<Icon name="plus" size={16} />
 					</button>
 					{plusOpen && (
@@ -422,8 +506,6 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 									<input className="an-input" placeholder="Search members" value={q} onChange={(e) => setQ(e.target.value)} />
 									{people === null ? (
 										<p className="an-muted">Loading members...</p>
-									) : people.error === "PERMISSION" ? (
-										<p className="an-error">Add the member:basic:read permission to this app and approve it in this community.</p>
 									) : people.error ? (
 										<p className="an-error">{people.error}</p>
 									) : shown.length === 0 ? (
@@ -489,9 +571,11 @@ export function RichEditor({ value, onChange, attach, attachMax, attachMb, menti
 							))}
 						</div>
 					)}
-					{note ? <p className="an-error">{note}</p> : null}
-					<p className="an-muted">{files.length}/{attachMax} attachments · images, video and files up to {attachMb} MB each</p>
 				</>
+			)}
+			{note ? <p className="an-error">{note}</p> : null}
+			{attach && (
+				<p className="an-muted">{files.length}/{attachMax} attachments · images, video and files up to {attachMb} MB each</p>
 			)}
 		</div>
 	);

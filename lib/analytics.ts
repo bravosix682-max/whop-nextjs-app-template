@@ -1,7 +1,7 @@
 // @ts-nocheck
 const enc = encodeURIComponent;
 
-export const KINDS = ["whop", "discord", "telegram", "push", "email", "chat", "forum"];
+export const KINDS = ["whop", "discord", "telegram", "push", "chat", "forum"];
 export const KIND_LABEL = {
 	whop: "Whop (in-app)", discord: "Discord", telegram: "Telegram", push: "Push",
 	email: "Email", chat: "Whop chat", forum: "Whop forum",
@@ -86,7 +86,7 @@ export async function loadAnalytics(experienceId: string, posts: any[], days: nu
 	for (const r of comments) bump(r.created_at, "whop", "comments", r.announcement_id);
 	for (const r of acks) bump(r.acked_at, "whop", "acks", r.announcement_id);
 	for (const r of clicks) bump(r.created_at, r.kind === "app" ? "whop" : r.kind, "clicks", r.announcement_id);
-	for (const l of logs) bump(l.created_at, kindOfLabel(l.channel), l.ok ? "sent" : "failed", l.announcement_id ?? undefined);
+	for (const l of logs) { const kk = kindOfLabel(l.channel); if (kk !== "email") bump(l.created_at, kk, l.ok ? "sent" : "failed", l.announcement_id ?? undefined); }
 
 	let emailRecipients = 0;
 	for (const l of logs) {
